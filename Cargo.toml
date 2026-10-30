@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-gpui = "0.2.2"
+chrono = "0.4.45"
+edit = "0.1.5"
 
 [[bench]]
 name = "protocol_bench"

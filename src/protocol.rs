@@ -15,7 +15,8 @@ use std::{
  *      * ...
  * [eob] -- offset of root directory description
  */
-pub fn create(path: &str) -> Result<()> {
+pub fn create<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
     fs::write(path, "\n0")?; // спижжено
     Ok(())
 }
