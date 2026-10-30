@@ -1,12 +1,12 @@
 [package]
 name = "baierr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 chrono = "0.4.45"
-edit = "0.1.5"
+clap = { version = "4", features = ["derive"] }
 
 [[bench]]
 name = "protocol_bench"
