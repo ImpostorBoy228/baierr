@@ -54,12 +54,10 @@ fn main() -> Result<()> {
     if a.append {
         cmd_append(&archive)?;
     } else if let Some([file, name]) = a.upload.as_deref() {
-        // num_args = 2 гарантирует [file, name]
         cmd_upload(&archive, file, &name.to_string_lossy())?;
     } else if let Some(name) = &a.read {
         io::stdout().write_all(&protocol::read(&archive, name)?)?;
     } else {
-        // включая явный --list и «голый» вызов
         let rdd = protocol::get_rdd(&archive)?;
         println!("{:?}", rdd);
     }
