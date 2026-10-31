@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+const KEY: [u8; 32] = [0x2a; 32];
+
 fn tmp_path(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -29,6 +31,13 @@ fn cleanup(p: &Path) {
 
 const BIN: &str = env!("CARGO_BIN_EXE_baierr");
 
+/// файл с сырым 32-байтовым ключом для CLI-тестов
+fn key_file(name: &str) -> PathBuf {
+    let p = tmp_path(&format!("key_{name}"));
+    std::fs::write(&p, KEY).unwrap();
+    p
+}
+
 struct Run {
     code: i32,
     stdout: String,
@@ -44,6 +53,14 @@ fn run(args: &[&str]) -> Run {
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         raw_stdout: out.stdout,
     }
+}
+
+/// run, но с обязательным --key FILE (для -a/-u/-r)
+fn runk(key: &Path, args: &[&str]) -> Run {
+    let k = key.to_str().unwrap();
+    let mut a = vec!["--key", k];
+    a.extend_from_slice(args);
+    run(&a)
 }
 
 // ============================================================
@@ -84,8 +101,8 @@ fn create_accepts_str_and_pathbuf() {
 fn roundtrip_single_byte() {
     let p = tmp_path("rt1b");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"Z", "one").unwrap();
-    assert_eq!(protocol::read(&p, "one").unwrap(), b"Z");
+    protocol::append(&p, &KEY, b"Z", "one").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "one").unwrap(), b"Z");
     cleanup(&p);
 }
 
@@ -93,8 +110,8 @@ fn roundtrip_single_byte() {
 fn roundtrip_empty_data() {
     let p = tmp_path("rt0b");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"", "zero").unwrap();
-    let d = protocol::read(&p, "zero").unwrap();
+    protocol::append(&p, &KEY, b"", "zero").unwrap();
+    let d = protocol::read(&p, &KEY, "zero").unwrap();
     assert!(d.is_empty());
     cleanup(&p);
 }
@@ -104,8 +121,8 @@ fn roundtrip_1kb() {
     let p = tmp_path("rt1k");
     protocol::create(&p).unwrap();
     let data: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
-    protocol::append(&p, &data, "kb").unwrap();
-    assert_eq!(protocol::read(&p, "kb").unwrap(), data);
+    protocol::append(&p, &KEY, &data, "kb").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "kb").unwrap(), data);
     cleanup(&p);
 }
 
@@ -114,8 +131,8 @@ fn roundtrip_64kb() {
     let p = tmp_path("rt64k");
     protocol::create(&p).unwrap();
     let data: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
-    protocol::append(&p, &data, "o64").unwrap();
-    assert_eq!(protocol::read(&p, "o64").unwrap(), data);
+    protocol::append(&p, &KEY, &data, "o64").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "o64").unwrap(), data);
     cleanup(&p);
 }
 
@@ -124,8 +141,8 @@ fn roundtrip_1mb() {
     let p = tmp_path("rt1m");
     protocol::create(&p).unwrap();
     let data: Vec<u8> = (0..1024 * 1024).map(|i| ((i * 7) % 256) as u8).collect();
-    protocol::append(&p, &data, "big1m").unwrap();
-    assert_eq!(protocol::read(&p, "big1m").unwrap(), data);
+    protocol::append(&p, &KEY, &data, "big1m").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "big1m").unwrap(), data);
     cleanup(&p);
 }
 
@@ -134,8 +151,8 @@ fn roundtrip_highly_negative_bytes_and_nulls() {
     let p = tmp_path("rtnull");
     protocol::create(&p).unwrap();
     let data: Vec<u8> = vec![0, 255, 1, 254, 2, 253, 0, 0, 255];
-    protocol::append(&p, &data, "nul").unwrap();
-    assert_eq!(protocol::read(&p, "nul").unwrap(), data);
+    protocol::append(&p, &KEY, &data, "nul").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "nul").unwrap(), data);
     cleanup(&p);
 }
 
@@ -144,8 +161,8 @@ fn roundtrip_only_newlines_data() {
     let p = tmp_path("rtnl");
     protocol::create(&p).unwrap();
     let data = b"\n\n\n\n\n";
-    protocol::append(&p, data, "nl").unwrap();
-    assert_eq!(protocol::read(&p, "nl").unwrap(), data);
+    protocol::append(&p, &KEY, data, "nl").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "nl").unwrap(), data);
     cleanup(&p);
 }
 
@@ -154,8 +171,8 @@ fn roundtrip_data_ending_with_newline() {
     let p = tmp_path("rtendnl");
     protocol::create(&p).unwrap();
     let data = b"hello\n";
-    protocol::append(&p, data, "end").unwrap();
-    assert_eq!(protocol::read(&p, "end").unwrap(), b"hello\n");
+    protocol::append(&p, &KEY, data, "end").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "end").unwrap(), b"hello\n");
     cleanup(&p);
 }
 
@@ -164,8 +181,8 @@ fn roundtrip_invalid_utf8_data() {
     let p = tmp_path("rtbin");
     protocol::create(&p).unwrap();
     let data: Vec<u8> = vec![0xff, 0xfe, 0x80, 0x81, b'a', b'\n', 0xff];
-    protocol::append(&p, &data, "bin").unwrap();
-    assert_eq!(protocol::read(&p, "bin").unwrap(), data);
+    protocol::append(&p, &KEY, &data, "bin").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "bin").unwrap(), data);
     cleanup(&p);
 }
 
@@ -176,8 +193,8 @@ fn roundtrip_data_that_looks_like_header() {
     let p = tmp_path("rtfake");
     protocol::create(&p).unwrap();
     let data = b"fake 42\nnot a header";
-    protocol::append(&p, data, "f").unwrap();
-    assert_eq!(protocol::read(&p, "f").unwrap(), data);
+    protocol::append(&p, &KEY, data, "f").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "f").unwrap(), data);
     cleanup(&p);
 }
 
@@ -186,8 +203,8 @@ fn roundtrip_data_containing_eob_like_text() {
     let p = tmp_path("rteob");
     protocol::create(&p).unwrap();
     let data = b"12 34\nsome numbers";
-    protocol::append(&p, data, "e").unwrap();
-    assert_eq!(protocol::read(&p, "e").unwrap(), data);
+    protocol::append(&p, &KEY, data, "e").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "e").unwrap(), data);
     cleanup(&p);
 }
 
@@ -195,10 +212,10 @@ fn roundtrip_data_containing_eob_like_text() {
 fn append_twice_then_read_both() {
     let p = tmp_path("a2");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"AAA", "first").unwrap();
-    protocol::append(&p, b"B\nB", "second").unwrap();
-    assert_eq!(protocol::read(&p, "first").unwrap(), b"AAA");
-    assert_eq!(protocol::read(&p, "second").unwrap(), b"B\nB");
+    protocol::append(&p, &KEY, b"AAA", "first").unwrap();
+    protocol::append(&p, &KEY, b"B\nB", "second").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "first").unwrap(), b"AAA");
+    assert_eq!(protocol::read(&p, &KEY, "second").unwrap(), b"B\nB");
     cleanup(&p);
 }
 
@@ -208,11 +225,11 @@ fn append_ten_and_read_backwards() {
     protocol::create(&p).unwrap();
     for i in 0..10 {
         let d = format!("val-{}", i).into_bytes();
-        protocol::append(&p, &d, &format!("n{}", i)).unwrap();
+        protocol::append(&p, &KEY, &d, &format!("n{}", i)).unwrap();
     }
     for i in (0..10).rev() {
         assert_eq!(
-            protocol::read(&p, &format!("n{}", i)).unwrap(),
+            protocol::read(&p, &KEY, &format!("n{}", i)).unwrap(),
             format!("val-{}", i).into_bytes()
         );
     }
@@ -227,16 +244,13 @@ fn append_ten_and_read_backwards() {
 fn layout_after_three_appends_all_offsets_valid() {
     let p = tmp_path("layout3");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"aaa", "f1").unwrap();
-    protocol::append(&p, b"bbbbb", "f2").unwrap();
-    protocol::append(&p, b"c", "f3").unwrap();
+    protocol::append(&p, &KEY, b"aaa", "f1").unwrap();
+    protocol::append(&p, &KEY, b"bbbbb", "f2").unwrap();
+    protocol::append(&p, &KEY, b"c", "f3").unwrap();
     let bytes = std::fs::read(&p).unwrap();
     // последний rdd-регион начинается c числа в последней строке (eob)
-    let last: u64 = std::fs::read_to_string(&p)
-        .unwrap()
-        .lines()
-        .last()
-        .unwrap()
+    let idx = bytes.iter().rposition(|&b| b == b'\n').unwrap();
+    let last: u64 = String::from_utf8_lossy(&bytes[idx + 1..])
         .trim()
         .parse()
         .unwrap();
@@ -250,7 +264,7 @@ fn each_append_increases_file_size() {
     protocol::create(&p).unwrap();
     let mut sizes = vec![std::fs::metadata(&p).unwrap().len()];
     for i in 0..5 {
-        protocol::append(&p, &vec![b'x'; 7 + i], &format!("g{}", i)).unwrap();
+        protocol::append(&p, &KEY, &vec![b'x'; 7 + i], &format!("g{}", i)).unwrap();
         sizes.push(std::fs::metadata(&p).unwrap().len());
     }
     for w in sizes.windows(2) {
@@ -263,9 +277,9 @@ fn each_append_increases_file_size() {
 fn append_preserves_older_content_readable() {
     let p = tmp_path("preserve_bytes");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"OLD-DATA-WITH\nNEWLINES", "old").unwrap();
+    protocol::append(&p, &KEY, b"OLD-DATA-WITH\nNEWLINES", "old").unwrap();
     let before = std::fs::read(&p).unwrap();
-    protocol::append(&p, b"new", "new").unwrap();
+    protocol::append(&p, &KEY, b"new", "new").unwrap();
     let after = std::fs::read(&p).unwrap();
     // старая eob-строка (` 31` и т.п.) сознательно съедается новым заголовком,
     // поэтому байтовый префикс = всё до последнего \n включительно
@@ -275,8 +289,8 @@ fn append_preserves_older_content_readable() {
         after.windows(prefix.len()).any(|w| w == prefix),
         "prefix of old content rewritten"
     );
-    assert_eq!(protocol::read(&p, "old").unwrap(), b"OLD-DATA-WITH\nNEWLINES");
-    assert_eq!(protocol::read(&p, "new").unwrap(), b"new");
+    assert_eq!(protocol::read(&p, &KEY, "old").unwrap(), b"OLD-DATA-WITH\nNEWLINES");
+    assert_eq!(protocol::read(&p, &KEY, "new").unwrap(), b"new");
     cleanup(&p);
 }
 
@@ -284,7 +298,7 @@ fn append_preserves_older_content_readable() {
 fn file_ends_with_eob_number_no_trailing_newline() {
     let p = tmp_path("tail");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"x", "t").unwrap();
+    protocol::append(&p, &KEY, b"x", "t").unwrap();
     let bytes = std::fs::read(&p).unwrap();
     assert_ne!(*bytes.last().unwrap(), b'\n');
     cleanup(&p);
@@ -298,8 +312,8 @@ fn file_ends_with_eob_number_no_trailing_newline() {
 fn names_with_spaces() {
     let p = tmp_path("n_sp");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"D", "my file v2.txt").unwrap();
-    assert_eq!(protocol::read(&p, "my file v2.txt").unwrap(), b"D");
+    protocol::append(&p, &KEY, b"D", "my file v2.txt").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "my file v2.txt").unwrap(), b"D");
     cleanup(&p);
 }
 
@@ -307,8 +321,8 @@ fn names_with_spaces() {
 fn names_numeric_only() {
     let p = tmp_path("n_num");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"D", "12345").unwrap();
-    assert_eq!(protocol::read(&p, "12345").unwrap(), b"D");
+    protocol::append(&p, &KEY, b"D", "12345").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "12345").unwrap(), b"D");
     let r = protocol::get_rdd(&p).unwrap();
     assert_eq!(r, vec!["12345"]);
     cleanup(&p);
@@ -319,8 +333,8 @@ fn names_with_inner_spaces_and_digits() {
     // name "a 1": rdd-строка "a 1 <offset>", rsplit_once(' ') даёт name = "a 1"
     let p = tmp_path("n_mix");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"D", "a 1").unwrap();
-    assert_eq!(protocol::read(&p, "a 1").unwrap(), b"D");
+    protocol::append(&p, &KEY, b"D", "a 1").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "a 1").unwrap(), b"D");
     cleanup(&p);
 }
 
@@ -329,8 +343,8 @@ fn names_slashes_and_unicode() {
     let p = tmp_path("n_uni");
     protocol::create(&p).unwrap();
     let name = "2026/10/30:фото-😀.png";
-    protocol::append(&p, b"U", name).unwrap();
-    assert_eq!(protocol::read(&p, name).unwrap(), b"U");
+    protocol::append(&p, &KEY, b"U", name).unwrap();
+    assert_eq!(protocol::read(&p, &KEY, name).unwrap(), b"U");
     assert_eq!(protocol::get_rdd(&p).unwrap(), vec![name]);
     cleanup(&p);
 }
@@ -340,8 +354,8 @@ fn names_very_long() {
     let p = tmp_path("n_long");
     protocol::create(&p).unwrap();
     let name = "f".repeat(10_000);
-    protocol::append(&p, b"L", &name).unwrap();
-    assert_eq!(protocol::read(&p, &name).unwrap(), b"L");
+    protocol::append(&p, &KEY, b"L", &name).unwrap();
+    assert_eq!(protocol::read(&p, &KEY, &name).unwrap(), b"L");
     cleanup(&p);
 }
 
@@ -349,8 +363,8 @@ fn names_very_long() {
 fn empty_name_still_roundtrips() {
     let p = tmp_path("n_empty");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"E", "").unwrap();
-    assert_eq!(protocol::read(&p, "").unwrap(), b"E");
+    protocol::append(&p, &KEY, b"E", "").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "").unwrap(), b"E");
     cleanup(&p);
 }
 
@@ -358,9 +372,9 @@ fn empty_name_still_roundtrips() {
 fn duplicate_names_read_returns_oldest() {
     let p = tmp_path("n_dup");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"FIRST", "dup").unwrap();
-    protocol::append(&p, b"SECOND", "dup").unwrap();
-    assert_eq!(protocol::read(&p, "dup").unwrap(), b"FIRST");
+    protocol::append(&p, &KEY, b"FIRST", "dup").unwrap();
+    protocol::append(&p, &KEY, b"SECOND", "dup").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "dup").unwrap(), b"FIRST");
     cleanup(&p);
 }
 
@@ -368,10 +382,10 @@ fn duplicate_names_read_returns_oldest() {
 fn name_shares_prefix_with_other() {
     let p = tmp_path("n_pref");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"A", "note").unwrap();
-    protocol::append(&p, b"B", "note2").unwrap();
-    assert_eq!(protocol::read(&p, "note").unwrap(), b"A");
-    assert_eq!(protocol::read(&p, "note2").unwrap(), b"B");
+    protocol::append(&p, &KEY, b"A", "note").unwrap();
+    protocol::append(&p, &KEY, b"B", "note2").unwrap();
+    assert_eq!(protocol::read(&p, &KEY, "note").unwrap(), b"A");
+    assert_eq!(protocol::read(&p, &KEY, "note2").unwrap(), b"B");
     cleanup(&p);
 }
 
@@ -392,7 +406,7 @@ fn get_rdd_order_matters_100() {
     let p = tmp_path("rdd100");
     protocol::create(&p).unwrap();
     for i in 0..100 {
-        protocol::append(&p, b"x", &format!("entry-{:03}", i)).unwrap();
+        protocol::append(&p, &KEY, b"x", &format!("entry-{:03}", i)).unwrap();
     }
     let r = protocol::get_rdd(&p).unwrap();
     assert_eq!(r.len(), 100);
@@ -408,11 +422,11 @@ fn get_rdd_and_read_consistent_many() {
     protocol::create(&p).unwrap();
     for i in 0..30 {
         let d = format!("payload {}", i).into_bytes();
-        protocol::append(&p, &d, &format!("f of {}", i)).unwrap();
+        protocol::append(&p, &KEY, &d, &format!("f of {}", i)).unwrap();
     }
     for name in protocol::get_rdd(&p).unwrap() {
         // имя должно существовать и читаться
-        protocol::read(&p, &name).unwrap();
+        protocol::read(&p, &KEY, &name).unwrap();
     }
     cleanup(&p);
 }
@@ -425,8 +439,8 @@ fn get_rdd_and_read_consistent_many() {
 fn ops_on_missing_file_error() {
     let p = tmp_path("missing_file_that_never_exists");
     let _ = std::fs::remove_file(&p);
-    assert!(protocol::append(&p, b"d", "n").is_err());
-    assert!(protocol::read(&p, "n").is_err());
+    assert!(protocol::append(&p, &KEY, b"d", "n").is_err());
+    assert!(protocol::read(&p, &KEY, "n").is_err());
     assert!(protocol::get_rdd(&p).is_err());
 }
 
@@ -434,7 +448,7 @@ fn ops_on_missing_file_error() {
 fn read_on_create_only_archive_finds_nothing() {
     let p = tmp_path("fresh");
     protocol::create(&p).unwrap();
-    assert!(protocol::read(&p, "any").is_err());
+    assert!(protocol::read(&p, &KEY, "any").is_err());
     cleanup(&p);
 }
 
@@ -442,7 +456,7 @@ fn read_on_create_only_archive_finds_nothing() {
 fn garbage_file_generated_from_empty_content_is_rejected() {
     let p = tmp_path("empty_file");
     std::fs::write(&p, b"").unwrap();
-    assert!(protocol::append(&p, b"d", "n").is_err());
+    assert!(protocol::append(&p, &KEY, b"d", "n").is_err());
     cleanup(&p);
 }
 
@@ -459,7 +473,7 @@ fn file_with_only_newline_is_rejected() {
     let p = tmp_path("only_nl");
     std::fs::write(&p, b"\n").unwrap();
     assert!(protocol::get_rdd(&p).is_err());
-    assert!(protocol::read(&p, "x").is_err());
+    assert!(protocol::read(&p, &KEY, "x").is_err());
     cleanup(&p);
 }
 
@@ -475,13 +489,13 @@ fn truncated_to_single_byte_is_rejected() {
 fn corrupted_eob_number_is_rejected() {
     let p = tmp_path("bad_eob");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"abc", "f").unwrap();
-    let mut s = std::fs::read_to_string(&p).unwrap();
+    protocol::append(&p, &KEY, b"abc", "f").unwrap();
+    let mut bytes = std::fs::read(&p).unwrap();
     // затираем число eob в последней строке
-    let idx = s.rfind('\n').unwrap();
-    s.truncate(idx + 1);
-    s.push_str("NaN");
-    std::fs::write(&p, s).unwrap();
+    let idx = bytes.iter().rposition(|&b| b == b'\n').unwrap();
+    bytes.truncate(idx + 1);
+    bytes.extend_from_slice(b"NaN");
+    std::fs::write(&p, bytes).unwrap();
     assert!(protocol::get_rdd(&p).is_err());
     cleanup(&p);
 }
@@ -493,9 +507,10 @@ fn eob_out_of_bounds_quirk_silently_yields_empty_rdd() {
     // вместо ошибки. Данные не теряются (лежат до rdd-региона), таблица да.
     let p = tmp_path("eob_far");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"abc", "f").unwrap();
-    let s = std::fs::read_to_string(&p).unwrap();
-    let big = format!("{}99999999", s);
+    protocol::append(&p, &KEY, b"abc", "f").unwrap();
+    let bytes = std::fs::read(&p).unwrap();
+    // раздуваем eob: добавляем девятки в конец
+    let big = format!("{}99999999", String::from_utf8_lossy(&bytes));
     std::fs::write(&p, big).unwrap();
     let r = protocol::get_rdd(&p).unwrap();
     assert!(r.is_empty());
@@ -506,12 +521,12 @@ fn eob_out_of_bounds_quirk_silently_yields_empty_rdd() {
 fn corrupted_file_variants_selected_as_error_or_inconsistent() {
     let p = tmp_path("trunc_mid");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"ABCDEF", "f").unwrap();
-    protocol::append(&p, b"XY", "g").unwrap();
+    protocol::append(&p, &KEY, b"ABCDEF", "f").unwrap();
+    protocol::append(&p, &KEY, b"XY", "g").unwrap();
     let bytes = std::fs::read(&p).unwrap();
     // обрезаем хвост (eob-строку) — вся цепочка обязана отказаться работать
     std::fs::write(&p, &bytes[..bytes.len() - 2]).unwrap();
-    assert!(protocol::read(&p, "f").is_err());
+    assert!(protocol::read(&p, &KEY, "f").is_err());
     assert!(protocol::get_rdd(&p).is_err());
     cleanup(&p);
 }
@@ -520,9 +535,9 @@ fn corrupted_file_variants_selected_as_error_or_inconsistent() {
 fn read_missing_name_on_valid_archive() {
     let p = tmp_path("r_missing");
     protocol::create(&p).unwrap();
-    protocol::append(&p, b"x", "known").unwrap();
-    assert!(protocol::read(&p, "unknown").is_err());
-    assert!(protocol::read(&p, "").is_err()); // пустое имя не создано
+    protocol::append(&p, &KEY, b"x", "known").unwrap();
+    assert!(protocol::read(&p, &KEY, "unknown").is_err());
+    assert!(protocol::read(&p, &KEY, "").is_err()); // пустое имя не создано
     cleanup(&p);
 }
 
@@ -536,14 +551,14 @@ fn stress_300_appends_and_full_traversal() {
     protocol::create(&p).unwrap();
     for i in 0..300 {
         let d = format!("body[{}.pad-{}]", i, i % 37).into_bytes();
-        protocol::append(&p, &d, &format!("k/{:04}/v", i)).unwrap();
+        protocol::append(&p, &KEY, &d, &format!("k/{:04}/v", i)).unwrap();
     }
     let rdd = protocol::get_rdd(&p).unwrap();
     assert_eq!(rdd.len(), 300);
     for i in 0..300 {
         let name = format!("k/{:04}/v", i);
         assert_eq!(
-            protocol::read(&p, &name).unwrap(),
+            protocol::read(&p, &KEY, &name).unwrap(),
             format!("body[{}.pad-{}]", i, i % 37).into_bytes(),
             "mismatch at {}",
             i
@@ -560,14 +575,14 @@ fn interleave_read_write_cycles() {
         for j in 0..10 {
             let name = format!("c{}-f{}", cycle, j);
             let d = format!("cycle-{}-file-{}", cycle, j).into_bytes();
-            protocol::append(&p, &d, &name).unwrap();
+            protocol::append(&p, &KEY, &d, &name).unwrap();
         }
         // полный обход после каждого цикла
         for c in 0..=cycle {
             for j in 0..10 {
                 let name = format!("c{}-f{}", c, j);
                 assert_eq!(
-                    protocol::read(&p, &name).unwrap(),
+                    protocol::read(&p, &KEY, &name).unwrap(),
                     format!("cycle-{}-file-{}", c, j).into_bytes()
                 );
             }
@@ -581,13 +596,14 @@ fn archive_size_is_linear_in_entries() {
     let p = tmp_path("linear");
     protocol::create(&p).unwrap();
     for i in 0..50 {
-        protocol::append(&p, b"stable-body", &format!("e{}", i)).unwrap();
+        protocol::append(&p, &KEY, b"stable-body", &format!("e{}", i)).unwrap();
     }
     let size = std::fs::metadata(&p).unwrap().len();
-    // 50 записей по 11 байт данных: суммарный рост должен быть O(n), не квадратичным
+    // 50 записей по 11 байт данных: суммарный рост должен быть O(n), не квадратичным.
+    // на запись теперь 40 байт крипто-оверxеда (nonce 24 + tag 16)
     let overhead = size - 50 * 11;
     assert!(
-        overhead < 50 * 250,
+        overhead < 50 * 300,
         "overhead per entry too big: {} bytes/entry",
         overhead / 50
     );
@@ -669,15 +685,16 @@ fn cli_upload_then_list_then_read() {
     let f = tmp_path("cli_up_src");
     std::fs::write(&f, b"note body\nsecond line\n").unwrap();
     let _ = std::fs::remove_file(&p);
+    let k = key_file("cli_up_k");
 
-    let r = run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "note.txt"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "note.txt"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
 
     let r = run(&[p.to_str().unwrap(), "--list"]);
     assert_eq!(r.code, 0);
     assert!(r.stdout.contains("note.txt"), "list: {}", r.stdout);
 
-    let r = run(&[p.to_str().unwrap(), "--read", "note.txt"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--read", "note.txt"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert_eq!(r.stdout, "note body\nsecond line\n");
 
@@ -691,7 +708,8 @@ fn cli_upload_rejects_empty_file() {
     let f = tmp_path("cli_empty_src");
     std::fs::write(&f, b"").unwrap();
     let _ = std::fs::remove_file(&p);
-    let r = run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "empty.bin"]);
+    let k = key_file("cli_empty_k");
+    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "empty.bin"]);
     assert_ne!(r.code, 0);
     assert!(r.stderr.contains("null lengh"), "stderr: {}", r.stderr);
     cleanup(&p);
@@ -704,8 +722,9 @@ fn cli_upload_same_name_twice_bails() {
     let f = tmp_path("cli_dupname_src");
     std::fs::write(&f, b"stuff").unwrap();
     let _ = std::fs::remove_file(&p);
-    run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"]);
-    let r = run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"]);
+    let k = key_file("cli_dupname_k");
+    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"]);
     assert_ne!(r.code, 0);
     assert!(r.stderr.contains("same name"), "stderr: {}", r.stderr);
     cleanup(&p);
@@ -719,9 +738,10 @@ fn cli_upload_binary_file_roundtrip() {
     let data: Vec<u8> = (0u8..=255).collect();
     std::fs::write(&f, &data).unwrap();
     let _ = std::fs::remove_file(&p);
+    let k = key_file("cli_bin_k");
 
-    run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "bin"]);
-    let r = run(&[p.to_str().unwrap(), "--read", "bin"]);
+    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "bin"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--read", "bin"]);
     assert_eq!(r.code, 0);
     assert_eq!(r.raw_stdout, data);
     cleanup(&p);
@@ -735,12 +755,13 @@ fn cli_upload_name_differs_from_source_path() {
     let f = tmp_path("some totally different file.txt");
     std::fs::write(&f, b"renamed body").unwrap();
     let _ = std::fs::remove_file(&p);
-    run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "journal.txt"]);
+    let k = key_file("cli_names_k");
+    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "journal.txt"]);
     let list = run(&[p.to_str().unwrap(), "--list"]).stdout;
     assert!(list.contains("journal.txt"), "{}", list);
     assert!(!list.contains(f.to_str().unwrap()), "{}", list);
     assert_eq!(
-        run(&[p.to_str().unwrap(), "--read", "journal.txt"]).stdout,
+        runk(&k, &[p.to_str().unwrap(), "--read", "journal.txt"]).stdout,
         "renamed body"
     );
     cleanup(&p);
@@ -753,11 +774,12 @@ fn cli_upload_requires_two_values() {
     let f = tmp_path("cli_need2_src");
     std::fs::write(&f, b"x").unwrap();
     let _ = std::fs::remove_file(&p);
+    let k = key_file("cli_need2_k");
     // одно значение — clap-ошибка
-    let r = run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap()]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap()]);
     assert_ne!(r.code, 0, "stderr: {}", r.stderr);
     // ноль значений — тоже
-    let r = run(&[p.to_str().unwrap(), "--upload"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--upload"]);
     assert_ne!(r.code, 0);
     cleanup(&p);
     cleanup(&f);
@@ -767,7 +789,8 @@ fn cli_upload_requires_two_values() {
 fn cli_read_missing_bails() {
     let p = tmp_path("cli_noread");
     run(&[p.to_str().unwrap()]);
-    let r = run(&[p.to_str().unwrap(), "--read", "ghost"]);
+    let k = key_file("cli_noread_k");
+    let r = runk(&k, &[p.to_str().unwrap(), "--read", "ghost"]);
     assert_ne!(r.code, 0);
     assert!(
         r.stderr.contains("not found in rdd") || !r.stderr.is_empty(),
@@ -785,9 +808,10 @@ fn cli_archive_is_reusable_across_processes() {
     std::fs::write(&f1, b"first-note").unwrap();
     std::fs::write(&f2, b"second-note").unwrap();
     let _ = std::fs::remove_file(&p);
+    let k = key_file("cli_reuse_k");
 
-    run(&[p.to_str().unwrap(), "--upload", f1.to_str().unwrap(), "n1"]);
-    run(&[p.to_str().unwrap(), "--upload", f2.to_str().unwrap(), "n2"]);
+    runk(&k, &[p.to_str().unwrap(), "--upload", f1.to_str().unwrap(), "n1"]);
+    runk(&k, &[p.to_str().unwrap(), "--upload", f2.to_str().unwrap(), "n2"]);
 
     let r = run(&[p.to_str().unwrap(), "--list"]);
     assert_eq!(r.code, 0);
@@ -795,11 +819,11 @@ fn cli_archive_is_reusable_across_processes() {
     assert!(r.stdout.contains("n2"), "{}", r.stdout);
 
     assert_eq!(
-        run(&[p.to_str().unwrap(), "--read", "n1"]).stdout,
+        runk(&k, &[p.to_str().unwrap(), "--read", "n1"]).stdout,
         "first-note"
     );
     assert_eq!(
-        run(&[p.to_str().unwrap(), "--read", "n2"]).stdout,
+        runk(&k, &[p.to_str().unwrap(), "--read", "n2"]).stdout,
         "second-note"
     );
 
@@ -815,8 +839,9 @@ fn cli_upload_read_data_with_newlines_and_null() {
     let data: Vec<u8> = b"line1\n\r\n\tline with \x00 null and end".to_vec();
     std::fs::write(&f, &data).unwrap();
     let _ = std::fs::remove_file(&p);
-    run(&[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "weird"]);
-    let r = run(&[p.to_str().unwrap(), "--read", "weird"]);
+    let k = key_file("cli_nl_k");
+    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "weird"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--read", "weird"]);
     assert_eq!(r.raw_stdout, data);
     cleanup(&p);
     cleanup(&f);

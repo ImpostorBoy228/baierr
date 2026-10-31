@@ -16,6 +16,10 @@ struct Cli {
     /// .b path
     archive: PathBuf,
 
+    /// file with exactly 32 bytes of key material (required for -a/-u/-r)
+    #[arg(short = 'k', long, value_name = "FILE")]
+    key: Option<PathBuf>,
+
     #[command(flatten)]
     action: Action,
 }
@@ -52,11 +56,14 @@ fn main() -> Result<()> {
 
     let a = &cli.action;
     if a.append {
-        cmd_append(&archive)?;
+        let key = load_key(cli.key.as_deref())?;
+        cmd_append(&archive, &key)?;
     } else if let Some([file, name]) = a.upload.as_deref() {
-        cmd_upload(&archive, file, &name.to_string_lossy())?;
+        let key = load_key(cli.key.as_deref())?;
+        cmd_upload(&archive, &key, file, &name.to_string_lossy())?;
     } else if let Some(name) = &a.read {
-        io::stdout().write_all(&protocol::read(&archive, name)?)?;
+        let key = load_key(cli.key.as_deref())?;
+        io::stdout().write_all(&protocol::read(&archive, &key, name)?)?;
     } else {
         let rdd = protocol::get_rdd(&archive)?;
         println!("{:?}", rdd);
@@ -65,7 +72,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn cmd_append(archive: &Path) -> Result<()> {
+fn load_key(path: Option<&Path>) -> Result<[u8; 32]> {
+    let path =
+        path.ok_or_else(|| anyhow::anyhow!("missing --key FILE (32 bytes of key material)"))?;
+    let bytes = fs::read(path)?;
+    let bytes_len = bytes.len();
+    bytes.try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "{}: key file must be exactly 32 bytes, got {}",
+            path.display(),
+            bytes_len
+        )
+    })
+}
+
+fn cmd_append(archive: &Path, key: &[u8; 32]) -> Result<()> {
     let shmpath_raw = format!("/dev/shm/secure_tempfile_{}", std::process::id());
     let shmpath = Path::new(&shmpath_raw);
     fs::write(shmpath, &format!("{}", Local::now()))?;
@@ -86,10 +107,10 @@ fn cmd_append(archive: &Path) -> Result<()> {
             now.minute(),
             now.second()
         );
-        if protocol::read(archive, &format!("{today}{rn}")).is_ok() {
+        if protocol::read(archive, key, &format!("{today}{rn}")).is_ok() {
             bail!("file with same date and time exists");
         }
-        protocol::append(archive, &edited, &format!("{today}{rn}"))?; // format is not particular
+        protocol::append(archive, key, &edited, &format!("{today}{rn}"))?; // format is not particular
     }
     if shmpath.exists() {
         let file_size = fs::metadata(shmpath)?.len();
@@ -103,15 +124,15 @@ fn cmd_append(archive: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_upload(archive: &Path, file: &Path, name: &str) -> Result<()> {
-    if protocol::read(archive, name).is_ok() {
+fn cmd_upload(archive: &Path, key: &[u8; 32], file: &Path, name: &str) -> Result<()> {
+    if protocol::read(archive, key, name).is_ok() {
         bail!("same name");
     }
     let data = fs::read(file)?;
     if data.is_empty() {
         bail!("no files with null lengh");
     }
-    protocol::append(archive, &data, name)?;
+    protocol::append(archive, key, &data, name)?;
 
     Ok(())
 }
