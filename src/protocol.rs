@@ -417,7 +417,7 @@ mod tests {
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"FIRST", "a").unwrap();
         append(p.to_str().unwrap(), &KEY, b"SECOND", "b").unwrap();
-        // plaintext на диске не лежит; обе записи читаются назад
+        // 明文不落盘；两条记录都会被回读。
         let bytes = fs::read(&p).unwrap();
         assert!(!bytes.windows(5).any(|w| w == b"FIRST"), "plaintext leaked");
         assert_eq!(read(p.to_str().unwrap(), &KEY, "a").unwrap(), b"FIRST");
@@ -494,8 +494,8 @@ mod tests {
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"a", "one").unwrap();
         append(p.to_str().unwrap(), &KEY, b"b", "two").unwrap();
-        // случайные байты шифротекстов могут дать \n\n\n — проверяем только
-        // текстовые (meta) регионы: маркер+заголовки+rdd+eob
+        // 密文的随机字节可能产生 \n\n\n —— 因此只检查
+        // 文本（meta）区域：标记 + 头部 + rdd + eob
         let bytes = fs::read(&p).unwrap();
         let ct_ranges = ct_payload_ranges(&bytes);
         for (start, end) in ct_ranges {
@@ -675,8 +675,8 @@ mod tests {
     fn unicode_inner_path() {
         let p = tmp_path("unicode");
         create(p.to_str().unwrap()).unwrap();
-        append(p.to_str().unwrap(), &KEY, b"U", "файл/😀").unwrap();
-        assert_eq!(read(p.to_str().unwrap(), &KEY, "файл/😀").unwrap(), b"U");
+        append(p.to_str().unwrap(), &KEY, b"U", "файл/🙏").unwrap();
+        assert_eq!(read(p.to_str().unwrap(), &KEY, "файл/🙏").unwrap(), b"U");
         let _ = fs::remove_file(&p);
     }
 
@@ -788,12 +788,12 @@ mod tests {
     }
 
     // ============================================================
-    // криптография
+    // 密码学
     // ============================================================
 
     #[test]
     fn data_on_disk_is_ciphertext() {
-        // открытый текст не должен лежать в файле как есть
+        // 明文不应原样存放在文件中
         let secret = b"super secret plaintext";
         let p = tmp_path("cta");
         create(p.to_str().unwrap()).unwrap();
@@ -875,7 +875,7 @@ mod tests {
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"important payload", "t").unwrap();
 
-        // вычисляем точный оффсёт байта внутри шифротекста (внутри ct, после nonce)
+        // 计算字节在密文中的精确偏移量（在 ct 内，位于 nonce 之后）。
         let mut file = File::open(&p).unwrap();
         let (eof, eob) = get_last_line_position_and_value(&mut file).unwrap();
         let eob_offset: u64 = eob.trim().parse().unwrap();
