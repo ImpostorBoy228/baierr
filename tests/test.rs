@@ -323,7 +323,7 @@ fn names_numeric_only() {
     protocol::create(&p).unwrap();
     protocol::append(&p, &KEY, b"D", "12345").unwrap();
     assert_eq!(protocol::read(&p, &KEY, "12345").unwrap(), b"D");
-    let r = protocol::get_rdd(&p).unwrap();
+    let r = protocol::get_rdd(&p, &KEY).unwrap();
     assert_eq!(r, vec!["12345"]);
     cleanup(&p);
 }
@@ -345,7 +345,7 @@ fn names_slashes_and_unicode() {
     let name = "2026/10/30:фото-😀.png";
     protocol::append(&p, &KEY, b"U", name).unwrap();
     assert_eq!(protocol::read(&p, &KEY, name).unwrap(), b"U");
-    assert_eq!(protocol::get_rdd(&p).unwrap(), vec![name]);
+    assert_eq!(protocol::get_rdd(&p, &KEY).unwrap(), vec![name]);
     cleanup(&p);
 }
 
@@ -397,7 +397,7 @@ fn name_shares_prefix_with_other() {
 fn get_rdd_after_create_is_empty() {
     let p = tmp_path("rdd0");
     protocol::create(&p).unwrap();
-    assert!(protocol::get_rdd(&p).unwrap().is_empty());
+    assert!(protocol::get_rdd(&p, &KEY).unwrap().is_empty());
     cleanup(&p);
 }
 
@@ -408,7 +408,7 @@ fn get_rdd_order_matters_100() {
     for i in 0..100 {
         protocol::append(&p, &KEY, b"x", &format!("entry-{:03}", i)).unwrap();
     }
-    let r = protocol::get_rdd(&p).unwrap();
+    let r = protocol::get_rdd(&p, &KEY).unwrap();
     assert_eq!(r.len(), 100);
     for (i, name) in r.iter().enumerate() {
         assert_eq!(name, &format!("entry-{:03}", i));
@@ -424,7 +424,7 @@ fn get_rdd_and_read_consistent_many() {
         let d = format!("payload {}", i).into_bytes();
         protocol::append(&p, &KEY, &d, &format!("f of {}", i)).unwrap();
     }
-    for name in protocol::get_rdd(&p).unwrap() {
+    for name in protocol::get_rdd(&p, &KEY).unwrap() {
         // имя должно существовать и читаться
         protocol::read(&p, &KEY, &name).unwrap();
     }
@@ -441,7 +441,7 @@ fn ops_on_missing_file_error() {
     let _ = std::fs::remove_file(&p);
     assert!(protocol::append(&p, &KEY, b"d", "n").is_err());
     assert!(protocol::read(&p, &KEY, "n").is_err());
-    assert!(protocol::get_rdd(&p).is_err());
+    assert!(protocol::get_rdd(&p, &KEY).is_err());
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn garbage_file_generated_from_empty_content_is_rejected() {
 fn file_without_newline_is_rejected() {
     let p = tmp_path("no_nl");
     std::fs::write(&p, b"no newline in here at all").unwrap();
-    assert!(protocol::get_rdd(&p).is_err());
+    assert!(protocol::get_rdd(&p, &KEY).is_err());
     cleanup(&p);
 }
 
@@ -472,7 +472,7 @@ fn file_without_newline_is_rejected() {
 fn file_with_only_newline_is_rejected() {
     let p = tmp_path("only_nl");
     std::fs::write(&p, b"\n").unwrap();
-    assert!(protocol::get_rdd(&p).is_err());
+    assert!(protocol::get_rdd(&p, &KEY).is_err());
     assert!(protocol::read(&p, &KEY, "x").is_err());
     cleanup(&p);
 }
@@ -481,7 +481,7 @@ fn file_with_only_newline_is_rejected() {
 fn truncated_to_single_byte_is_rejected() {
     let p = tmp_path("one_byte");
     std::fs::write(&p, b"5").unwrap();
-    assert!(protocol::get_rdd(&p).is_err());
+    assert!(protocol::get_rdd(&p, &KEY).is_err());
     cleanup(&p);
 }
 
@@ -496,7 +496,7 @@ fn corrupted_eob_number_is_rejected() {
     bytes.truncate(idx + 1);
     bytes.extend_from_slice(b"NaN");
     std::fs::write(&p, bytes).unwrap();
-    assert!(protocol::get_rdd(&p).is_err());
+    assert!(protocol::get_rdd(&p, &KEY).is_err());
     cleanup(&p);
 }
 
@@ -512,7 +512,7 @@ fn eob_out_of_bounds_quirk_silently_yields_empty_rdd() {
     // раздуваем eob: добавляем девятки в конец
     let big = format!("{}99999999", String::from_utf8_lossy(&bytes));
     std::fs::write(&p, big).unwrap();
-    let r = protocol::get_rdd(&p).unwrap();
+    let r = protocol::get_rdd(&p, &KEY).unwrap();
     assert!(r.is_empty());
     cleanup(&p);
 }
@@ -527,7 +527,7 @@ fn corrupted_file_variants_selected_as_error_or_inconsistent() {
     // обрезаем хвост (eob-строку) — вся цепочка обязана отказаться работать
     std::fs::write(&p, &bytes[..bytes.len() - 2]).unwrap();
     assert!(protocol::read(&p, &KEY, "f").is_err());
-    assert!(protocol::get_rdd(&p).is_err());
+    assert!(protocol::get_rdd(&p, &KEY).is_err());
     cleanup(&p);
 }
 
@@ -553,7 +553,7 @@ fn stress_300_appends_and_full_traversal() {
         let d = format!("body[{}.pad-{}]", i, i % 37).into_bytes();
         protocol::append(&p, &KEY, &d, &format!("k/{:04}/v", i)).unwrap();
     }
-    let rdd = protocol::get_rdd(&p).unwrap();
+    let rdd = protocol::get_rdd(&p, &KEY).unwrap();
     assert_eq!(rdd.len(), 300);
     for i in 0..300 {
         let name = format!("k/{:04}/v", i);
@@ -662,20 +662,44 @@ fn cli_help_exits_zero_and_prints_usage() {
 fn cli_bare_path_creates_archive_and_lists_exit_zero() {
     let p = tmp_path("cli_create");
     let _ = std::fs::remove_file(&p);
-    let r = run(&[p.to_str().unwrap()]);
+    let k = key_file("cli_create_k");
+    let r = runk(&k, &[p.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert_eq!(std::fs::read(&p).unwrap(), b"\n0");
     assert_eq!(r.stdout.trim(), "[]");
     cleanup(&p);
+    cleanup(&k);
 }
 
 #[test]
 fn cli_list_on_fresh_archive_is_empty() {
     let p = tmp_path("cli_list0");
     let _ = std::fs::remove_file(&p);
-    let r = run(&[p.to_str().unwrap(), "--list"]);
+    let k = key_file("cli_list0_k");
+    let r = runk(&k, &[p.to_str().unwrap(), "--list"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert_eq!(r.stdout.trim(), "[]");
+    cleanup(&p);
+    cleanup(&k);
+}
+
+#[test]
+fn cli_list_without_key_bails() {
+    let p = tmp_path("cli_list_nokey");
+    let _ = std::fs::remove_file(&p);
+    let r = run(&[p.to_str().unwrap(), "--list"]);
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("missing --key"), "stderr: {}", r.stderr);
+    cleanup(&p);
+}
+
+#[test]
+fn cli_default_without_key_bails() {
+    let p = tmp_path("cli_default_nokey");
+    let _ = std::fs::remove_file(&p);
+    let r = run(&[p.to_str().unwrap()]);
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("missing --key"), "stderr: {}", r.stderr);
     cleanup(&p);
 }
 
@@ -690,7 +714,7 @@ fn cli_upload_then_list_then_read() {
     let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "note.txt"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
 
-    let r = run(&[p.to_str().unwrap(), "--list"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--list"]);
     assert_eq!(r.code, 0);
     assert!(r.stdout.contains("note.txt"), "list: {}", r.stdout);
 
@@ -757,7 +781,7 @@ fn cli_upload_name_differs_from_source_path() {
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_names_k");
     runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "journal.txt"]);
-    let list = run(&[p.to_str().unwrap(), "--list"]).stdout;
+    let list = runk(&k, &[p.to_str().unwrap(), "--list"]).stdout;
     assert!(list.contains("journal.txt"), "{}", list);
     assert!(!list.contains(f.to_str().unwrap()), "{}", list);
     assert_eq!(
@@ -813,7 +837,7 @@ fn cli_archive_is_reusable_across_processes() {
     runk(&k, &[p.to_str().unwrap(), "--upload", f1.to_str().unwrap(), "n1"]);
     runk(&k, &[p.to_str().unwrap(), "--upload", f2.to_str().unwrap(), "n2"]);
 
-    let r = run(&[p.to_str().unwrap(), "--list"]);
+    let r = runk(&k, &[p.to_str().unwrap(), "--list"]);
     assert_eq!(r.code, 0);
     assert!(r.stdout.contains("n1"), "{}", r.stdout);
     assert!(r.stdout.contains("n2"), "{}", r.stdout);

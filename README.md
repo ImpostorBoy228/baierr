@@ -12,7 +12,7 @@
 [![Rust](https://github.com/impostorboy/baierr/actions/workflows/rust.yml/badge.svg)](https://github.com/impostorboy/baierr/actions/workflows/rust.yml)
 [![Version](https://img.shields.io/badge/version-0.3.0-orange)]()
 [![Tests](https://img.shields.io/badge/tests-106-brightgreen)]()
-[![Crypto](https://img.shields.io/badge/crypto-XChaCha20--Poly1305-9cf)]()
+[![Crypto](https://img.shields.io/badge/crypto-SM4--CBC%20%2B%20CMAC-9cf)]()
 [![Buzzwords](https://img.shields.io/badge/buzzwords-MAXIMUM-purple)]()
 
 **STOP** scrolling. **STOP** using formats designed by committees in 1988.
@@ -30,8 +30,8 @@ Remember when you first discovered formats? Whether you're a student, an indie d
 
 1. ✅ **One file** for everything. Marie Kondo levels of tidiness.
 2. ✅ **Append-only architecture** — old bytes are never rewritten. Not a bug: a *lifestyle*. Immutability purists are *shaking*.
-3. ✅ **Everything you write is encrypted.** Every record. No flags, no opt-outs, no mercy. The file *content* is `XChaCha20-Poly1305` ciphertext with a fresh random nonce per record.
-4. ✅ **Five dependencies total**: `anyhow`, `chacha20poly1305`, `chrono`, `clap`, `getrandom`. While competitors ship with 900 transitive crates, baierr ships with dignity *and now opinions about cryptography*.
+3. ✅ **Everything you write is encrypted.** Every record and the rdd. No flags, no opt-outs, no mercy. The file *content* is `SM4-CBC` ciphertext authenticated with `CMAC`, with a fresh random IV per record.
+4. ✅ **Lean dependencies**: `anyhow`, `cbc`, `chrono`, `clap`, `getrandom`, `sm4`. While competitors ship with 900 transitive crates, baierr ships with dignity *and now opinions about cryptography*.
 5. ✅ **106 tests.** Some lines of source code will be *outlived* by them.
 6. ✅ **Blazingly fast™** (the ™ is load-bearing).
 
@@ -63,8 +63,8 @@ That's right: nvim, and only nvim. This is the elite editor experience you've be
 ## 🖥️ CLI (Borderline Hard To Get Wrong!)
 
 ```text
-baierr ARCHIVE                                  # bare path — the power move
-baierr ARCHIVE --list                           # no key needed. directories are not secrets
+baierr ARCHIVE --key key.bin                    # bare path — print the (encrypted) table of contents
+baierr ARCHIVE --key key.bin --list             # key required: the rdd is encrypted too
 baierr ARCHIVE --key key.bin --read NAME
 baierr ARCHIVE --key key.bin --upload FILE NAME
 baierr ARCHIVE --key key.bin --append           # launches the sacred nvim
@@ -72,7 +72,7 @@ baierr ARCHIVE --key key.bin --append           # launches the sacred nvim
 
 | Flag | What it does | Comment |
 |---|---|---|
-| `--list` (`-l`) | print the table of contents | no key: rdd stays plaintext by design |
+| `--list` (`-l`) | print the table of contents | requires `--key`: the rdd is encrypted with SM4 |
 | `--read NAME` (`-r`) | decrypt and dump record to stdout | wrong key = `Err`, not garbage |
 | `--upload FILE NAME` (`-u`) | encrypt a file in, name it anything | disk path and archive name — *independent* |
 | `--append` (`-a`) | write an encrypted note via nvim | see "Security" below |
@@ -84,7 +84,7 @@ Sample session (generate the key, try to contain yourself):
 ```sh
 $ openssl rand 32 > key.bin     # or your occult method of choice
 $ baierr notes.b --key key.bin --upload essay.pdf "about life"
-$ baierr notes.b --list
+$ baierr notes.b --key key.bin --list
 about life 23884                     <- offsets: public. contents: not.
 $ baierr notes.b --key key.bin --read "about life" > out.pdf
 $ head -c 4 out.pdf
@@ -100,11 +100,11 @@ Correct. It's not a bug — it's **authored style**.
 ### 🛡️ "Security" (World-Class, At Last!)
 
 Someone cackled "zero encryption" for a year, and then 0.3.0 happened. Every
-record is now sealed with **XChaCha20-Poly1305** (RFC 8439's longer-armed
-cousin): a fresh 24-byte random nonce per append and a Poly1305 tag that guards
-against bit-flips, bit-bends, and wrong-key enthusiasts. A tampered byte or a
-foreign key gets you an error, never a curious binary mess pretending to be
-your PDF.
+record and the root directory description are now sealed with **SM4-CBC**,
+authenticated with **CMAC-SM4**: a fresh 16-byte random IV per write and a tag
+that guards against bit-flips, bit-bends, and wrong-key enthusiasts. A tampered
+byte or a foreign key gets you an error, never a curious binary mess pretending
+to be your PDF.
 
 The keys are 256-bit, loaded raw from a file (`--key key.bin`, exactly 32
 bytes). And yes, in `--append`, data is edited in a temp file in `/dev/shm`
@@ -128,12 +128,12 @@ habits.
 ```text
 [local header]      "name size\n"             <- a line, not magic
 [data]              exactly `size` bytes of CIPHERTEXT:
-                    nonce(24) || ciphertext || tag(16)
-                    size = plaintext_length + 40
+                    iv(16) || SM4-CBC ciphertext || tag(16)
+                    size = padded_plaintext_length + 32
 [local header 2]
 [data 2]
 ...
-[rdd]               "name offset\n" — one pair per record, plaintext on purpose
+[rdd]               encrypted "name offset\n" blob (SM4-CBC + CMAC)
 [eob]               a single number: offset of the rdd
 ```
 
@@ -162,7 +162,7 @@ let key: [u8; 32] = /* 32 bytes of antiques */;
 
 protocol::create("diary.b")?;                                        // literally fs::write(path, "\n0")  // спижжено ("stolen")
 protocol::append("diary.b", &key, b"\xde\xad\xbe\xef", "entry")?;     // encrypted before it touches the disk
-let list = protocol::get_rdd("diary.b")?;                            // -> Vec<String>, in append order, plaintext
+let list = protocol::get_rdd("diary.b", &key)?;                      // -> Vec<String>, decrypted with SM4
 let raw  = protocol::read("diary.b", &key, "entry")?;                // -> decrypted Vec<u8>, MAC-verified
 ```
 
@@ -185,10 +185,10 @@ let raw  = protocol::read("diary.b", &key, "entry")?;                // -> decry
   encryption every single one comes back. ALL of it.
 - **Authenticated.** `wrong_key_returns_error_not_garbage` and
   `tampered_ciphertext_detected` are actual test names, not slogans. Flip one
-  byte of ciphertext and the Poly1305 tag snitches instantly.
-- **Nonce hygiene.** Same plaintext appended twice → different ciphertexts on
-  disk (`same_data_appended_twice_produces_different_ciphertext`). XChaCha's
-  24-byte nonces make birthday collisions a rounding error at any archive size.
+  byte of ciphertext and the CMAC tag snitches instantly.
+- **IV hygiene.** Same plaintext appended twice → different ciphertexts on
+  disk (`same_data_appended_twice_produces_different_ciphertext`). A fresh
+  16-byte random IV is generated for every record and every rdd rewrite.
 - **Naming.** Spaces, digits, slashes, emoji, names up to 10,000 chars (see
   `names_very_long` — yes, that's a test), even *empty* names — all work.
   Something's off? They work — *confidentially* now.
@@ -237,10 +237,9 @@ soul — check `git log` for the canon: `initial`, `cargo mingle his dingle`,
 
 ## Crash Course (Seriously, What's Inside?)
 
-- **AES? Not here.** XChaCha20-Poly1305: pure-Rust, constant-time on any CPU
-  without praying to the AES-NI gods, and 24-byte nonces that refuse to collide
-  even if you append a million small times. AES-256-GCM sits in the corner,
-  jealous, FIPS-compliant.
+- **AES? Not here.** SM4-CBC + CMAC-SM4: pure-Rust, constant-time on any CPU
+  without praying to the AES-NI gods, with a fresh 16-byte IV per write.
+  AES-256-GCM sits in the corner, jealous, FIPS-compliant.
 - **One key.** 32 raw bytes from `--key key.bin`. No KDF ceremony, no password
   stretching, no "derive from your childhood pet" — baierr trusts you to
   generate them with `openssl rand 32`.

@@ -1,17 +1,20 @@
 use anyhow::{Result, bail};
-use chacha20poly1305::{
-    XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit},
-};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
 };
+use cbc::cipher::{
+    Block, BlockCipherEncrypt, BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit,
+    block_padding::Pkcs7,
+};
+use sm4::Sm4;
+type Sm4CbcEnc = cbc::Encryptor<Sm4>;
+type Sm4CbcDec = cbc::Decryptor<Sm4>;
 
 pub const KEY_LEN: usize = 32;
-const NONCE_LEN: usize = 24;
-const TAG_LEN: usize = 16;
-const OVERHEAD: usize = NONCE_LEN + TAG_LEN;
+const BLOCK: usize = 16;
+const TAG_LEN: usize = BLOCK;
+const OVERHEAD: usize = BLOCK + TAG_LEN;
 
 /* file structure:
  * [local header]
@@ -39,51 +42,36 @@ pub fn append<P: AsRef<std::path::Path>>(
     let path = path.as_ref();
     let ciphertext = encrypt(key, data)?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-    let (eof, eob) = get_last_line_position_and_value(&mut file)?;
-    let eob_offset: u64 = eob.parse().map_err(|_| anyhow::anyhow!("invalid eob"))?;
-    file.seek(SeekFrom::Start(eob_offset))?;
-    let rdd_len = eof.saturating_sub(eob_offset).saturating_sub(1);
-    let mut rdd: Vec<u8> = vec![0; rdd_len as usize];
-    if rdd_len > 0 {
-        file.read_exact(&mut rdd)?;
+    let (eof, raw_rdd) = read_rdd_region(&mut file)?;
+
+    let mut rdd = decrypt_rdd(key, &raw_rdd)?;
+    if !rdd.is_empty() && !rdd.ends_with(b"\n") {
+        rdd.push(b'\n');
     }
+    rdd.extend_from_slice(format!("{} {}", inner_path, eof).as_bytes());
+    let rdd_ciphertext = encrypt(key, &rdd)?;
+
     // '\n' guaranteed
     file.seek(SeekFrom::Start(eof))?;
     file.write_all(format!("{} {}\n", inner_path, ciphertext.len()).as_bytes())?;
     file.write_all(&ciphertext)?;
     file.write_all(b"\n")?; // here it appears
     let eob_new = file.stream_position()?;
-    file.write_all(&rdd)?;
-    if !rdd.is_empty() && !rdd.ends_with(b"\n") {
-        file.write_all(b"\n")?;
-    }
-    file.write_all(format!("{} {}", inner_path, eof).as_bytes())?;
-    file.write_all(format!("\n {}", eob_new).as_bytes())?;
+    file.write_all(&rdd_ciphertext)?;
+    file.write_all(b"\n")?;
+    file.write_all(format!(" {}", eob_new).as_bytes())?;
     Ok(())
 }
 
-pub fn get_rdd<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<String>> {
+pub fn get_rdd<P: AsRef<std::path::Path>>(
+    path: P,
+    key: &[u8; KEY_LEN],
+) -> Result<Vec<String>> {
     let path = path.as_ref();
     let mut file = OpenOptions::new().read(true).open(path)?;
-    let (eof, eob) = get_last_line_position_and_value(&mut file)?;
-    let eob_offset: u64 = eob.parse().map_err(|_| anyhow::anyhow!("invalid eob"))?;
-    file.seek(SeekFrom::Start(eob_offset))?;
-    let rdd_len = eof.saturating_sub(eob_offset).saturating_sub(1);
-    let mut rdd: Vec<u8> = vec![0; rdd_len as usize];
-    if rdd_len > 0 {
-        file.read_exact(&mut rdd)?;
-    }
-    let mut out = Vec::new();
-    for line in String::from_utf8_lossy(&rdd).lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let (name, _) = line
-            .rsplit_once(' ')
-            .ok_or_else(|| anyhow::anyhow!("bad rdd entry"))?;
-        out.push(name.to_string());
-    }
-    Ok(out)
+    let (_, raw_rdd) = read_rdd_region(&mut file)?;
+    let rdd = decrypt_rdd(key, &raw_rdd)?;
+    Ok(parse_rdd(&rdd)?.into_iter().map(|(name, _)| name).collect())
 }
 
 pub fn read<P: AsRef<std::path::Path>>(
@@ -93,29 +81,13 @@ pub fn read<P: AsRef<std::path::Path>>(
 ) -> Result<Vec<u8>> {
     let path = path.as_ref();
     let mut file = OpenOptions::new().read(true).open(path)?;
-    let (eof, eob) = get_last_line_position_and_value(&mut file)?;
-    let eob_offset: u64 = eob.parse().map_err(|_| anyhow::anyhow!("invalid eob"))?;
-    file.seek(SeekFrom::Start(eob_offset))?;
-    let rdd_len = eof.saturating_sub(eob_offset).saturating_sub(1);
-    let mut rdd: Vec<u8> = vec![0; rdd_len as usize];
-    if rdd_len > 0 {
-        file.read_exact(&mut rdd)?;
-    }
-
-    let mut offset: Option<u64> = None;
-    for line in String::from_utf8_lossy(&rdd).lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let (name, off) = line
-            .rsplit_once(' ')
-            .ok_or_else(|| anyhow::anyhow!("bad rdd entry"))?;
-        if name == inner_path {
-            offset = Some(off.parse().map_err(|_| anyhow::anyhow!("bad offset"))?);
-            break;
-        }
-    }
-    let offset = offset.ok_or_else(|| anyhow::anyhow!("inner_path not found in rdd"))?;
+    let (_, raw_rdd) = read_rdd_region(&mut file)?;
+    let rdd = decrypt_rdd(key, &raw_rdd)?;
+    let offset = parse_rdd(&rdd)?
+        .into_iter()
+        .find(|(name, _)| name == inner_path)
+        .map(|(_, offset)| offset)
+        .ok_or_else(|| anyhow::anyhow!("inner_path not found in rdd"))?;
 
     file.seek(SeekFrom::Start(offset))?;
     let mut header = Vec::new();
@@ -135,7 +107,7 @@ pub fn read<P: AsRef<std::path::Path>>(
         return Err(anyhow::anyhow!("inner_path mismatch"));
     }
     let size: usize = size_str.parse().map_err(|_| anyhow::anyhow!("bad size"))?;
-    if size < OVERHEAD {
+    if size < OVERHEAD + BLOCK {
         bail!("payload too small: {}", size);
     }
     let mut payload = vec![0; size];
@@ -143,30 +115,166 @@ pub fn read<P: AsRef<std::path::Path>>(
     decrypt(key, &payload)
 }
 
+fn read_rdd_region(file: &mut File) -> Result<(u64, Vec<u8>)> {
+    let (eof, eob) = get_last_line_position_and_value(file)?;
+    let eob_offset: u64 = eob.parse().map_err(|_| anyhow::anyhow!("invalid eob"))?;
+    let rdd_len = eof.saturating_sub(eob_offset).saturating_sub(1);
+    file.seek(SeekFrom::Start(eob_offset))?;
+    let mut rdd = vec![0; rdd_len as usize];
+    if rdd_len > 0 {
+        file.read_exact(&mut rdd)?;
+    }
+    Ok((eof, rdd))
+}
+
+fn decrypt_rdd(key: &[u8; KEY_LEN], raw_rdd: &[u8]) -> Result<Vec<u8>> {
+    if raw_rdd.is_empty() {
+        Ok(Vec::new())
+    } else {
+        decrypt(key, raw_rdd)
+    }
+}
+
+fn parse_rdd(rdd: &[u8]) -> Result<Vec<(String, u64)>> {
+    let mut out = Vec::new();
+    for line in String::from_utf8_lossy(rdd).lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (name, offset) = line
+            .rsplit_once(' ')
+            .ok_or_else(|| anyhow::anyhow!("bad rdd entry"))?;
+        let offset = offset.parse().map_err(|_| anyhow::anyhow!("bad offset"))?;
+        out.push((name.to_string(), offset));
+    }
+    Ok(out)
+}
+
 fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new(key.into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::fill(&mut nonce_bytes)?;
-    let nonce = XNonce::try_from(&nonce_bytes as &[u8]).expect("nonce len checked");
-    let ct = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| anyhow::anyhow!("encrypt failed: {e}"))?;
-    let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ct);
+    let (enc_key, mac_key) = split_key(key);
+    let mut iv = [0u8; BLOCK];
+    getrandom::fill(&mut iv)?;
+
+    // PKCS#7 填充总会额外添加至少一个分组。
+    let padded_len = (plaintext.len() / BLOCK + 1) * BLOCK;
+    let mut buf = vec![0u8; padded_len];
+    buf[..plaintext.len()].copy_from_slice(plaintext);
+    let ct_len = Sm4CbcEnc::new(&enc_key.into(), &iv.into())
+        .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
+        .map_err(|_| anyhow::anyhow!("encrypt failed: buffer too small"))?
+        .len();
+    buf.truncate(ct_len);
+
+    // 布局：iv || 密文 || cmac(iv || 密文)
+    let mut out = Vec::with_capacity(BLOCK + buf.len() + TAG_LEN);
+    out.extend_from_slice(&iv);
+    out.extend_from_slice(&buf);
+    let tag = cmac_sm4(&mac_key, &out);
+    out.extend_from_slice(&tag);
     Ok(out)
 }
 
 fn decrypt(key: &[u8; KEY_LEN], payload: &[u8]) -> Result<Vec<u8>> {
-    if payload.len() < OVERHEAD {
+    if payload.len() < OVERHEAD + BLOCK {
         bail!("payload too small: {}", payload.len());
     }
-    let (nonce, ct) = payload.split_at(NONCE_LEN);
-    let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce = XNonce::try_from(nonce as &[u8]).expect("nonce len fixed");
-    cipher
-        .decrypt(&nonce, ct)
-        .map_err(|_| anyhow::anyhow!("wrong key or corrupted data"))
+    let (iv, rest) = payload.split_at(BLOCK);
+    let (ct, tag) = rest.split_at(rest.len() - TAG_LEN);
+    if ct.is_empty() || ct.len() % BLOCK != 0 {
+        bail!("invalid ciphertext length: {}", ct.len());
+    }
+
+    let (enc_key, mac_key) = split_key(key);
+    let expected = cmac_sm4(&mac_key, &payload[..payload.len() - TAG_LEN]);
+    if !constant_time_eq(&expected, tag) {
+        bail!("wrong key or corrupted data");
+    }
+
+    let iv: [u8; BLOCK] = iv.try_into().expect("iv len checked");
+    let mut buf = ct.to_vec();
+    let pt_len = Sm4CbcDec::new(&enc_key.into(), &iv.into())
+        .decrypt_padded::<Pkcs7>(&mut buf)
+        .map_err(|_| anyhow::anyhow!("wrong key or corrupted data"))?
+        .len();
+    buf.truncate(pt_len);
+    Ok(buf)
+}
+
+fn split_key(key: &[u8; KEY_LEN]) -> ([u8; BLOCK], [u8; BLOCK]) {
+    let mut enc = [0u8; BLOCK];
+    let mut mac = [0u8; BLOCK];
+    enc.copy_from_slice(&key[..BLOCK]);
+    mac.copy_from_slice(&key[BLOCK..]);
+    (enc, mac)
+}
+
+fn cmac_sm4(key: &[u8; BLOCK], data: &[u8]) -> [u8; TAG_LEN] {
+    let cipher = Sm4::new(key.into());
+
+    let mut l = [0u8; BLOCK];
+    encrypt_block(&cipher, &mut l);
+    let mut k1 = l;
+    dbl(&mut k1);
+    let mut k2 = k1;
+    dbl(&mut k2);
+
+    let mut mac = [0u8; BLOCK];
+    let blocks = data.len().div_ceil(BLOCK).max(1);
+    for i in 0..blocks {
+        let start = i * BLOCK;
+        let end = (start + BLOCK).min(data.len());
+        let mut block = [0u8; BLOCK];
+        if end - start == BLOCK {
+            block.copy_from_slice(&data[start..end]);
+            if i == blocks - 1 {
+                xor_block(&mut block, &k1);
+            }
+        } else {
+            block[..end - start].copy_from_slice(&data[start..end]);
+            block[end - start] = 0x80;
+            if i == blocks - 1 {
+                xor_block(&mut block, &k2);
+            }
+        }
+        xor_block(&mut mac, &block);
+        encrypt_block(&cipher, &mut mac);
+    }
+    mac
+}
+
+fn encrypt_block(cipher: &Sm4, block: &mut [u8; BLOCK]) {
+    let mut b = Block::<Sm4>::default();
+    b.copy_from_slice(block);
+    cipher.encrypt_block(&mut b);
+    block.copy_from_slice(&b);
+}
+
+fn dbl(block: &mut [u8; BLOCK]) {
+    let mut carry = 0u8;
+    for byte in block.iter_mut().rev() {
+        let next = *byte >> 7;
+        *byte = (*byte << 1) | carry;
+        carry = next;
+    }
+    if carry != 0 {
+        block[BLOCK - 1] ^= 0x87;
+    }
+}
+
+fn xor_block(a: &mut [u8; BLOCK], b: &[u8; BLOCK]) {
+    for (x, y) in a.iter_mut().zip(b) {
+        *x ^= y;
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b)
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 fn get_last_line_position_and_value(file: &mut File) -> Result<(u64, String)> {
@@ -206,24 +314,23 @@ mod tests {
 
     const KEY: [u8; 32] = [0x2a; 32];
 
-    fn parse_rdd_from_bytes(bytes: &[u8]) -> Vec<(String, usize)> {
+    fn rdd_range_from_bytes(bytes: &[u8]) -> (usize, usize) {
         let idx_last_nl = bytes.iter().rposition(|&b| b == b'\n').unwrap();
         let eob: usize = String::from_utf8_lossy(&bytes[idx_last_nl + 1..])
             .trim()
             .parse()
             .unwrap();
-        let rdd = &bytes[eob..idx_last_nl];
-        let mut out = Vec::new();
-        for line in String::from_utf8_lossy(rdd).lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let (name, off) = line.rsplit_once(' ').unwrap();
-            if let Ok(off) = off.parse::<usize>() {
-                out.push((name.to_string(), off));
-            }
-        }
-        out
+        (eob, idx_last_nl)
+    }
+
+    fn parse_rdd_from_bytes(bytes: &[u8]) -> Vec<(String, usize)> {
+        let (eob, idx_last_nl) = rdd_range_from_bytes(bytes);
+        let rdd = decrypt_rdd(&KEY, &bytes[eob..idx_last_nl]).unwrap();
+        parse_rdd(&rdd)
+            .unwrap()
+            .into_iter()
+            .map(|(name, off)| (name, off as usize))
+            .collect()
     }
 
     fn find_entry_offset(bytes: &[u8], name: &str) -> Option<usize> {
@@ -233,14 +340,22 @@ mod tests {
             .map(|(_, o)| o)
     }
 
-    fn ct_payload_ranges(bytes: &[u8]) -> Vec<(usize, usize)> {
+    fn encrypted_ranges(bytes: &[u8]) -> Vec<(usize, usize)> {
+        let entries = parse_rdd_from_bytes(bytes);
         let mut out = Vec::new();
-        for (_, off) in parse_rdd_from_bytes(bytes) {
-            let nl = bytes[off..].iter().position(|&b| b == b'\n').unwrap();
-            let header = String::from_utf8_lossy(&bytes[off..off + nl]).into_owned();
+        for (i, (_, off)) in entries.iter().enumerate() {
+            let nl = bytes[*off..].iter().position(|&b| b == b'\n').unwrap();
+            let header = String::from_utf8_lossy(&bytes[*off..*off + nl]).into_owned();
             let size: usize = header.rsplit_once(' ').unwrap().1.parse().unwrap();
-            out.push((off + nl + 1, off + nl + 1 + size));
+            let ct_start = *off + nl + 1;
+            let ct_end = ct_start + size;
+            out.push((ct_start, ct_end));
+            if let Some((_, next_off)) = entries.get(i + 1) {
+                // 记录之间遗留的旧 RDD 密文
+                out.push((ct_end, *next_off));
+            }
         }
+        out.push(rdd_range_from_bytes(bytes));
         out
     }
 
@@ -284,12 +399,12 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, b"ABC", "foo").unwrap();
         let bytes = fs::read(&p).unwrap();
         assert!(
-            bytes.starts_with(b"\nfoo 43\n"),
+            bytes.starts_with(b"\nfoo 48\n"),
             "got: {:?}",
             String::from_utf8_lossy(&bytes[..40])
         );
-        let header_end = b"\nfoo 43\n".len();
-        let ct_region = &bytes[header_end..header_end + 43];
+        let header_end = b"\nfoo 48\n".len();
+        let ct_region = &bytes[header_end..header_end + 48];
         assert!(
             !ct_region.windows(3).any(|w| w == b"ABC"),
             "plaintext leaked"
@@ -303,9 +418,9 @@ mod tests {
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"", "empty").unwrap();
         let bytes = fs::read(&p).unwrap();
-        // пустой plaintext => ровно 40 байт (nonce || tag), header "empty 40"
+        // 空明文 => 16（iv）+ 16（填充）+ 16（tag）= 48 字节
         assert!(
-            bytes.starts_with(b"\nempty 40\n"),
+            bytes.starts_with(b"\nempty 48\n"),
             "got: {:?}",
             String::from_utf8_lossy(&bytes[..40])
         );
@@ -327,7 +442,7 @@ mod tests {
         );
         assert_eq!(read(p.to_str().unwrap(), &KEY, "bar").unwrap(), b"XY");
         assert_eq!(read(p.to_str().unwrap(), &KEY, "baz").unwrap(), b"Z");
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert_eq!(r, vec!["foo", "bar", "baz"]);
         let _ = fs::remove_file(&p);
     }
@@ -385,7 +500,7 @@ mod tests {
         // find entry line "foo <offset>" in rdd region (текст, plaintext)
         let entry = find_entry_offset(&bytes, "foo").unwrap();
         assert!(
-            bytes[entry..].starts_with(b"foo 43"),
+            bytes[entry..].starts_with(b"foo 48"),
             "off={}, bytes={:?}",
             entry,
             String::from_utf8_lossy(&bytes[entry..entry + 6])
@@ -451,7 +566,7 @@ mod tests {
             let path = format!("f{}", i);
             append(p.to_str().unwrap(), &KEY, &data, &path).unwrap();
         }
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert_eq!(r.len(), 50);
         for i in 0..50 {
             assert!(r.contains(&format!("f{}", i)), "missing f{}", i);
@@ -483,7 +598,7 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, b"a", "one").unwrap();
         append(p.to_str().unwrap(), &KEY, b"b", "two").unwrap();
         append(p.to_str().unwrap(), &KEY, b"c", "three").unwrap();
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert_eq!(r, vec!["one", "two", "three"]);
         let _ = fs::remove_file(&p);
     }
@@ -494,17 +609,26 @@ mod tests {
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"a", "one").unwrap();
         append(p.to_str().unwrap(), &KEY, b"b", "two").unwrap();
-        // 密文的随机字节可能产生 \n\n\n —— 因此只检查
-        // 文本（meta）区域：标记 + 头部 + rdd + eob
+        // 密文的随机字节可能产生 \n\n\n —— 因此排除数据密文和 RDD 密文，
+        // 只检查纯文本的元数据区域。
         let bytes = fs::read(&p).unwrap();
-        let ct_ranges = ct_payload_ranges(&bytes);
-        for (start, end) in ct_ranges {
-            let filtered: Vec<u8> = [&bytes[..start], &bytes[end..]].concat();
-            assert!(
-                !filtered.windows(3).any(|w| w == b"\n\n\n"),
-                "too many blanks in meta region"
-            );
+        let mut ranges = encrypted_ranges(&bytes);
+        ranges.sort_unstable();
+
+        let mut pos = 0;
+        for (start, end) in ranges {
+            if start > pos {
+                assert!(
+                    !bytes[pos..start].windows(3).any(|w| w == b"\n\n\n"),
+                    "too many blanks in meta region"
+                );
+            }
+            pos = pos.max(end);
         }
+        assert!(
+            !bytes[pos..].windows(3).any(|w| w == b"\n\n\n"),
+            "too many blanks in meta region"
+        );
         let _ = fs::remove_file(&p);
     }
 
@@ -523,7 +647,7 @@ mod tests {
     fn get_rdd_empty() {
         let p = tmp_path("rddempty");
         create(p.to_str().unwrap()).unwrap();
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert!(r.is_empty());
         let _ = fs::remove_file(&p);
     }
@@ -535,7 +659,7 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, b"a", "one").unwrap();
         append(p.to_str().unwrap(), &KEY, b"b", "two").unwrap();
         append(p.to_str().unwrap(), &KEY, b"c", "three").unwrap();
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert_eq!(r, vec!["one", "two", "three"]);
         let _ = fs::remove_file(&p);
     }
@@ -619,7 +743,7 @@ mod tests {
         let p = tmp_path("rddspaces");
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"SP", "my file.txt").unwrap();
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert_eq!(r, vec!["my file.txt"]);
         let _ = fs::remove_file(&p);
     }
@@ -643,7 +767,7 @@ mod tests {
             h.join().unwrap();
         }
         // best-effort: at least one entry present
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert!(!r.is_empty());
         let _ = fs::remove_file(p.as_path());
     }
@@ -665,7 +789,7 @@ mod tests {
         let p = tmp_path("emptyname");
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"X", "").unwrap();
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert!(r.contains(&String::new()));
         assert_eq!(read(p.to_str().unwrap(), &KEY, "").unwrap(), b"X");
         let _ = fs::remove_file(&p);
@@ -707,7 +831,7 @@ mod tests {
         for i in 0..200 {
             append(p.to_str().unwrap(), &KEY, b"x", &format!("s{}", i)).unwrap();
         }
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert_eq!(r.len(), 200);
         let _ = fs::remove_file(&p);
     }
@@ -719,7 +843,7 @@ mod tests {
         for i in 0..10 {
             append(p.to_str().unwrap(), &KEY, b"x", &format!("o{}", i)).unwrap();
         }
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         for i in 0..10 {
             assert_eq!(r[i], format!("o{}", i));
         }
@@ -753,7 +877,7 @@ mod tests {
         fs::write(&p, &bytes[..bytes.len() - 3]).unwrap();
         assert!(
             read(p.to_str().unwrap(), &KEY, "foo").is_err()
-                || get_rdd(p.to_str().unwrap()).is_err()
+                || get_rdd(p.to_str().unwrap(), &KEY).is_err()
         );
         let _ = fs::remove_file(&p);
     }
@@ -769,7 +893,7 @@ mod tests {
         bytes.truncate(idx + 1);
         bytes.extend_from_slice(b"NOTANUMBER");
         fs::write(&p, &bytes).unwrap();
-        assert!(get_rdd(p.to_str().unwrap()).is_err());
+        assert!(get_rdd(p.to_str().unwrap(), &KEY).is_err());
         let _ = fs::remove_file(&p);
     }
 
@@ -780,7 +904,7 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, b"1", "alpha").unwrap();
         append(p.to_str().unwrap(), &KEY, b"2", "beta").unwrap();
         append(p.to_str().unwrap(), &KEY, b"3", "gamma").unwrap();
-        let r = get_rdd(p.to_str().unwrap()).unwrap();
+        let r = get_rdd(p.to_str().unwrap(), &KEY).unwrap();
         assert!(r.contains(&"alpha".to_string()));
         assert!(r.contains(&"beta".to_string()));
         assert!(r.contains(&"gamma".to_string()));
@@ -808,6 +932,25 @@ mod tests {
     }
 
     #[test]
+    fn rdd_is_encrypted_and_requires_key() {
+        let p = tmp_path("rdd_ct");
+        create(p.to_str().unwrap()).unwrap();
+        append(p.to_str().unwrap(), &KEY, b"x", "secret").unwrap();
+
+        let bytes = fs::read(&p).unwrap();
+        let (eob, idx_last_nl) = rdd_range_from_bytes(&bytes);
+        let raw_rdd = &bytes[eob..idx_last_nl];
+        let plain = decrypt(&KEY, raw_rdd).unwrap();
+        assert!(plain.starts_with(b"secret "));
+        assert_ne!(raw_rdd, plain.as_slice());
+
+        let bad_key: [u8; 32] = [0x2b; 32];
+        assert!(decrypt(&bad_key, raw_rdd).is_err());
+        assert!(get_rdd(p.to_str().unwrap(), &bad_key).is_err());
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
     fn same_data_appended_twice_produces_different_ciphertext() {
         // вероятностный тест: nonce разный => шифротексты разных append'ов различны
         let data = b"same bytes";
@@ -817,21 +960,11 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, data, "g").unwrap();
 
         // вытащим оба шифротекста через rdd-оффсеты (это публичное поведение формата)
+        let entries = parse_rdd_from_bytes(&fs::read(&p).unwrap());
         let mut file = File::open(&p).unwrap();
-        let (eof, eob) = get_last_line_position_and_value(&mut file).unwrap();
-        let eob_offset: u64 = eob.trim().parse().unwrap();
-        file.seek(SeekFrom::Start(eob_offset)).unwrap();
-        let rdd_len = (eof - eob_offset - 1) as usize;
-        let mut rdd = vec![0; rdd_len];
-        file.read_exact(&mut rdd).unwrap();
 
         let mut cts: Vec<Vec<u8>> = Vec::new();
-        for line in String::from_utf8_lossy(&rdd).lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let (_, off) = line.rsplit_once(' ').unwrap();
-            let off: usize = off.parse().unwrap();
+        for (_, off) in entries {
             file.seek(SeekFrom::Start(off as u64)).unwrap();
             let mut header = Vec::new();
             loop {
@@ -875,22 +1008,14 @@ mod tests {
         create(p.to_str().unwrap()).unwrap();
         append(p.to_str().unwrap(), &KEY, b"important payload", "t").unwrap();
 
-        // 计算字节在密文中的精确偏移量（在 ct 内，位于 nonce 之后）。
-        let mut file = File::open(&p).unwrap();
-        let (eof, eob) = get_last_line_position_and_value(&mut file).unwrap();
-        let eob_offset: u64 = eob.trim().parse().unwrap();
-        file.seek(SeekFrom::Start(eob_offset)).unwrap();
-        let rdd_len = (eof - eob_offset - 1) as usize;
-        let mut rdd = vec![0; rdd_len];
-        file.read_exact(&mut rdd).unwrap();
-        let line = String::from_utf8_lossy(&rdd)
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap()
-            .to_string();
-        let (name, off) = line.rsplit_once(' ').unwrap();
+        // 计算字节在密文中的精确偏移量（在 ct 内，位于 iv 之后）。
+        let bytes = fs::read(&p).unwrap();
+        let (name, off) = parse_rdd_from_bytes(&bytes)
+            .into_iter()
+            .find(|(name, _)| name == "t")
+            .unwrap();
         assert_eq!(name, "t");
-        let off: usize = off.parse().unwrap();
+        let mut file = File::open(&p).unwrap();
         file.seek(SeekFrom::Start(off as u64)).unwrap();
         let mut header = Vec::new();
         loop {
@@ -901,8 +1026,8 @@ mod tests {
             }
             header.push(b[0]);
         }
-        // NONCE_LEN + 5 — гарантированно внутри ct-региона
-        let tamper_off = off + header.len() + 1 + NONCE_LEN + 5;
+        // BLOCK + 5 —— 确保位于密文区域内
+        let tamper_off = off + header.len() + 1 + BLOCK + 5;
         drop(file);
 
         let mut bytes = fs::read(&p).unwrap();
@@ -932,7 +1057,7 @@ mod tests {
             let data: Vec<u8> = (0..64).map(|j| ((i * 31 + j * 7) % 256) as u8).collect();
             append(p.to_str().unwrap(), &KEY, &data, "bin").unwrap();
             assert_eq!(read(p.to_str().unwrap(), &KEY, "bin").unwrap(), data);
-            assert!(get_rdd(p.to_str().unwrap()).is_ok());
+            assert!(get_rdd(p.to_str().unwrap(), &KEY).is_ok());
             let _ = fs::remove_file(&p);
         }
     }

@@ -16,7 +16,7 @@ struct Cli {
     /// .b path
     archive: PathBuf,
 
-    /// file with exactly 32 bytes of key material (required for -a/-u/-r)
+    /// file with exactly 32 bytes of key material (required for every action)
     #[arg(short = 'k', long, value_name = "FILE")]
     key: Option<PathBuf>,
 
@@ -48,6 +48,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let archive = cli.archive;
+    let key = load_key(cli.key.as_deref())?;
     match archive.try_exists() {
         Ok(true) => {}
         Ok(false) => protocol::create(&archive)?,
@@ -56,16 +57,13 @@ fn main() -> Result<()> {
 
     let a = &cli.action;
     if a.append {
-        let key = load_key(cli.key.as_deref())?;
         cmd_append(&archive, &key)?;
     } else if let Some([file, name]) = a.upload.as_deref() {
-        let key = load_key(cli.key.as_deref())?;
         cmd_upload(&archive, &key, file, &name.to_string_lossy())?;
     } else if let Some(name) = &a.read {
-        let key = load_key(cli.key.as_deref())?;
         io::stdout().write_all(&protocol::read(&archive, &key, name)?)?;
     } else {
-        let rdd = protocol::get_rdd(&archive)?;
+        let rdd = protocol::get_rdd(&archive, &key)?;
         println!("{:?}", rdd);
     }
 

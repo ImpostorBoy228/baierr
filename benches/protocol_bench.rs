@@ -142,7 +142,7 @@ fn bench_get_rdd(c: &mut Criterion) {
         make_archive(&p, entries, 64);
         group.bench_function(format!("get_rdd_{entries}"), |b| {
             b.iter(|| {
-                let r = protocol::get_rdd(&p).unwrap();
+                let r = protocol::get_rdd(&p, &KEY).unwrap();
                 black_box(r);
             })
         });
