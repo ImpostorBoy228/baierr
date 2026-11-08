@@ -9,6 +9,7 @@ block-padding = "0.4.2"
 cbc = "0.2.1"
 chrono = "0.4.45"
 clap = { version = "4", features = ["derive"] }
+cmac = "0.8"
 getrandom = "0.4"
 sm4 = "0.6.0"
 

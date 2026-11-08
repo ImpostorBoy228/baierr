@@ -289,7 +289,10 @@ fn append_preserves_older_content_readable() {
         after.windows(prefix.len()).any(|w| w == prefix),
         "prefix of old content rewritten"
     );
-    assert_eq!(protocol::read(&p, &KEY, "old").unwrap(), b"OLD-DATA-WITH\nNEWLINES");
+    assert_eq!(
+        protocol::read(&p, &KEY, "old").unwrap(),
+        b"OLD-DATA-WITH\nNEWLINES"
+    );
     assert_eq!(protocol::read(&p, &KEY, "new").unwrap(), b"new");
     cleanup(&p);
 }
@@ -711,7 +714,15 @@ fn cli_upload_then_list_then_read() {
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_up_k");
 
-    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "note.txt"]);
+    let r = runk(
+        &k,
+        &[
+            p.to_str().unwrap(),
+            "--upload",
+            f.to_str().unwrap(),
+            "note.txt",
+        ],
+    );
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
 
     let r = runk(&k, &[p.to_str().unwrap(), "--list"]);
@@ -733,7 +744,15 @@ fn cli_upload_rejects_empty_file() {
     std::fs::write(&f, b"").unwrap();
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_empty_k");
-    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "empty.bin"]);
+    let r = runk(
+        &k,
+        &[
+            p.to_str().unwrap(),
+            "--upload",
+            f.to_str().unwrap(),
+            "empty.bin",
+        ],
+    );
     assert_ne!(r.code, 0);
     assert!(r.stderr.contains("null lengh"), "stderr: {}", r.stderr);
     cleanup(&p);
@@ -747,8 +766,14 @@ fn cli_upload_same_name_twice_bails() {
     std::fs::write(&f, b"stuff").unwrap();
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_dupname_k");
-    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"]);
-    let r = runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"]);
+    runk(
+        &k,
+        &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"],
+    );
+    let r = runk(
+        &k,
+        &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "dup"],
+    );
     assert_ne!(r.code, 0);
     assert!(r.stderr.contains("same name"), "stderr: {}", r.stderr);
     cleanup(&p);
@@ -764,7 +789,10 @@ fn cli_upload_binary_file_roundtrip() {
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_bin_k");
 
-    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "bin"]);
+    runk(
+        &k,
+        &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "bin"],
+    );
     let r = runk(&k, &[p.to_str().unwrap(), "--read", "bin"]);
     assert_eq!(r.code, 0);
     assert_eq!(r.raw_stdout, data);
@@ -780,7 +808,15 @@ fn cli_upload_name_differs_from_source_path() {
     std::fs::write(&f, b"renamed body").unwrap();
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_names_k");
-    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "journal.txt"]);
+    runk(
+        &k,
+        &[
+            p.to_str().unwrap(),
+            "--upload",
+            f.to_str().unwrap(),
+            "journal.txt",
+        ],
+    );
     let list = runk(&k, &[p.to_str().unwrap(), "--list"]).stdout;
     assert!(list.contains("journal.txt"), "{}", list);
     assert!(!list.contains(f.to_str().unwrap()), "{}", list);
@@ -834,8 +870,14 @@ fn cli_archive_is_reusable_across_processes() {
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_reuse_k");
 
-    runk(&k, &[p.to_str().unwrap(), "--upload", f1.to_str().unwrap(), "n1"]);
-    runk(&k, &[p.to_str().unwrap(), "--upload", f2.to_str().unwrap(), "n2"]);
+    runk(
+        &k,
+        &[p.to_str().unwrap(), "--upload", f1.to_str().unwrap(), "n1"],
+    );
+    runk(
+        &k,
+        &[p.to_str().unwrap(), "--upload", f2.to_str().unwrap(), "n2"],
+    );
 
     let r = runk(&k, &[p.to_str().unwrap(), "--list"]);
     assert_eq!(r.code, 0);
@@ -864,7 +906,15 @@ fn cli_upload_read_data_with_newlines_and_null() {
     std::fs::write(&f, &data).unwrap();
     let _ = std::fs::remove_file(&p);
     let k = key_file("cli_nl_k");
-    runk(&k, &[p.to_str().unwrap(), "--upload", f.to_str().unwrap(), "weird"]);
+    runk(
+        &k,
+        &[
+            p.to_str().unwrap(),
+            "--upload",
+            f.to_str().unwrap(),
+            "weird",
+        ],
+    );
     let r = runk(&k, &[p.to_str().unwrap(), "--read", "weird"]);
     assert_eq!(r.raw_stdout, data);
     cleanup(&p);

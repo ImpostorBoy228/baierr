@@ -1,7 +1,7 @@
 use baierr::protocol;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use std::hint::black_box;
 use std::fs;
+use std::hint::black_box;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY: [u8; 32] = [0x2a; 32];

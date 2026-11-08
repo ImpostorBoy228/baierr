@@ -1,13 +1,11 @@
 use anyhow::{Result, bail};
+use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::Pkcs7};
+use cmac::{Cmac, Mac};
+use sm4::Sm4;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
 };
-use cbc::cipher::{
-    Block, BlockCipherEncrypt, BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit,
-    block_padding::Pkcs7,
-};
-use sm4::Sm4;
 type Sm4CbcEnc = cbc::Encryptor<Sm4>;
 type Sm4CbcDec = cbc::Decryptor<Sm4>;
 
@@ -42,6 +40,7 @@ pub fn append<P: AsRef<std::path::Path>>(
     let path = path.as_ref();
     let ciphertext = encrypt(key, data)?;
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    file.lock()?;
     let (eof, raw_rdd) = read_rdd_region(&mut file)?;
 
     let mut rdd = decrypt_rdd(key, &raw_rdd)?;
@@ -63,12 +62,10 @@ pub fn append<P: AsRef<std::path::Path>>(
     Ok(())
 }
 
-pub fn get_rdd<P: AsRef<std::path::Path>>(
-    path: P,
-    key: &[u8; KEY_LEN],
-) -> Result<Vec<String>> {
+pub fn get_rdd<P: AsRef<std::path::Path>>(path: P, key: &[u8; KEY_LEN]) -> Result<Vec<String>> {
     let path = path.as_ref();
     let mut file = OpenOptions::new().read(true).open(path)?;
+    file.lock_shared()?;
     let (_, raw_rdd) = read_rdd_region(&mut file)?;
     let rdd = decrypt_rdd(key, &raw_rdd)?;
     Ok(parse_rdd(&rdd)?.into_iter().map(|(name, _)| name).collect())
@@ -81,6 +78,7 @@ pub fn read<P: AsRef<std::path::Path>>(
 ) -> Result<Vec<u8>> {
     let path = path.as_ref();
     let mut file = OpenOptions::new().read(true).open(path)?;
+    file.lock_shared()?;
     let (_, raw_rdd) = read_rdd_region(&mut file)?;
     let rdd = decrypt_rdd(key, &raw_rdd)?;
     let offset = parse_rdd(&rdd)?
@@ -169,7 +167,7 @@ fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(BLOCK + buf.len() + TAG_LEN);
     out.extend_from_slice(&iv);
     out.extend_from_slice(&buf);
-    let tag = cmac_sm4(&mac_key, &out);
+    let tag = cmac_sm4(&mac_key, &out)?;
     out.extend_from_slice(&tag);
     Ok(out)
 }
@@ -185,10 +183,11 @@ fn decrypt(key: &[u8; KEY_LEN], payload: &[u8]) -> Result<Vec<u8>> {
     }
 
     let (enc_key, mac_key) = split_key(key);
-    let expected = cmac_sm4(&mac_key, &payload[..payload.len() - TAG_LEN]);
-    if !constant_time_eq(&expected, tag) {
-        bail!("wrong key or corrupted data");
-    }
+    let mut mac = Cmac::<Sm4>::new_from_slice(&mac_key)
+        .map_err(|_| anyhow::anyhow!("wrong key or corrupted data"))?;
+    mac.update(&payload[..payload.len() - TAG_LEN]);
+    mac.verify_slice(tag)
+        .map_err(|_| anyhow::anyhow!("wrong key or corrupted data"))?;
 
     let iv: [u8; BLOCK] = iv.try_into().expect("iv len checked");
     let mut buf = ct.to_vec();
@@ -208,73 +207,12 @@ fn split_key(key: &[u8; KEY_LEN]) -> ([u8; BLOCK], [u8; BLOCK]) {
     (enc, mac)
 }
 
-fn cmac_sm4(key: &[u8; BLOCK], data: &[u8]) -> [u8; TAG_LEN] {
-    let cipher = Sm4::new(key.into());
-
-    let mut l = [0u8; BLOCK];
-    encrypt_block(&cipher, &mut l);
-    let mut k1 = l;
-    dbl(&mut k1);
-    let mut k2 = k1;
-    dbl(&mut k2);
-
-    let mut mac = [0u8; BLOCK];
-    let blocks = data.len().div_ceil(BLOCK).max(1);
-    for i in 0..blocks {
-        let start = i * BLOCK;
-        let end = (start + BLOCK).min(data.len());
-        let mut block = [0u8; BLOCK];
-        if end - start == BLOCK {
-            block.copy_from_slice(&data[start..end]);
-            if i == blocks - 1 {
-                xor_block(&mut block, &k1);
-            }
-        } else {
-            block[..end - start].copy_from_slice(&data[start..end]);
-            block[end - start] = 0x80;
-            if i == blocks - 1 {
-                xor_block(&mut block, &k2);
-            }
-        }
-        xor_block(&mut mac, &block);
-        encrypt_block(&cipher, &mut mac);
-    }
-    mac
-}
-
-fn encrypt_block(cipher: &Sm4, block: &mut [u8; BLOCK]) {
-    let mut b = Block::<Sm4>::default();
-    b.copy_from_slice(block);
-    cipher.encrypt_block(&mut b);
-    block.copy_from_slice(&b);
-}
-
-fn dbl(block: &mut [u8; BLOCK]) {
-    let mut carry = 0u8;
-    for byte in block.iter_mut().rev() {
-        let next = *byte >> 7;
-        *byte = (*byte << 1) | carry;
-        carry = next;
-    }
-    if carry != 0 {
-        block[BLOCK - 1] ^= 0x87;
-    }
-}
-
-fn xor_block(a: &mut [u8; BLOCK], b: &[u8; BLOCK]) {
-    for (x, y) in a.iter_mut().zip(b) {
-        *x ^= y;
-    }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter()
-        .zip(b)
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+fn cmac_sm4(key: &[u8; BLOCK], data: &[u8]) -> Result<[u8; TAG_LEN]> {
+    let mut mac =
+        Cmac::<Sm4>::new_from_slice(key).map_err(|_| anyhow::anyhow!("bad CMAC key length"))?;
+    mac.update(data);
+    let tag: [u8; TAG_LEN] = mac.finalize().into_bytes().into();
+    Ok(tag)
 }
 
 fn get_last_line_position_and_value(file: &mut File) -> Result<(u64, String)> {
@@ -1046,6 +984,60 @@ mod tests {
         assert_eq!(read(p.to_str().unwrap(), &KEY, "e").unwrap(), b"");
         assert!(read(p.to_str().unwrap(), &[0u8; 32], "e").is_err());
         let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn cmac_sm4_known_answer() {
+        // OpenSSL 3.6: `openssl mac -macopt cipher:SM4-CBC -macopt hexkey:<key> CMAC`
+        let key = [
+            0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
+            0x4f, 0x3c,
+        ];
+        let cases: [(&[u8], [u8; TAG_LEN]); 4] = [
+            (
+                &[],
+                [
+                    0x39, 0x9a, 0x9c, 0x93, 0x09, 0x64, 0xa3, 0xd4, 0xe3, 0x8c, 0x59, 0xda, 0x47,
+                    0xf0, 0xb3, 0x09,
+                ],
+            ),
+            (
+                &[
+                    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73,
+                    0x93, 0x17, 0x2a,
+                ],
+                [
+                    0x4e, 0x4c, 0x2a, 0x44, 0x17, 0xe5, 0x67, 0xfe, 0xf0, 0x81, 0xe0, 0xfa, 0xb5,
+                    0x5a, 0x57, 0x62,
+                ],
+            ),
+            (
+                &[
+                    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73,
+                    0x93, 0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7,
+                    0x6f, 0xac, 0x45, 0xaf, 0x8e, 0x51,
+                ],
+                [
+                    0x93, 0xe3, 0x5c, 0x4a, 0xf3, 0xe2, 0xb4, 0x42, 0x3f, 0x07, 0xbe, 0x9b, 0x87,
+                    0xaa, 0x6b, 0x3f,
+                ],
+            ),
+            (
+                &[
+                    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73,
+                    0x93, 0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7,
+                    0x6f, 0xac, 0x45, 0xaf, 0x8e, 0x51, 0xda, 0xc6, 0xc2, 0xf2, 0xb4, 0xe1, 0xb3,
+                    0xd4, 0xd1, 0xf2, 0xe3, 0xa4, 0xb5, 0xc6, 0xd7, 0xe8,
+                ],
+                [
+                    0x9e, 0x44, 0x3c, 0x08, 0x4d, 0xfd, 0x6e, 0x97, 0x61, 0x2b, 0x51, 0xe7, 0xc9,
+                    0xe7, 0x14, 0x93,
+                ],
+            ),
+        ];
+        for (data, expected) in cases {
+            assert_eq!(cmac_sm4(&key, data).unwrap(), expected);
+        }
     }
 
     #[test]
