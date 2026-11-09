@@ -31,7 +31,7 @@ Remember when you first discovered formats? Whether you're a student, an indie d
 1. ✅ **One file** for everything. Marie Kondo levels of tidiness.
 2. ✅ **Append-only architecture** — old bytes are never rewritten. Not a bug: a *lifestyle*. Immutability purists are *shaking*.
 3. ✅ **Everything you write is encrypted.** Every record and the rdd. No flags, no opt-outs, no mercy. The file *content* is `SM4-CBC` ciphertext authenticated with `CMAC`, with a fresh random IV per record.
-4. ✅ **Lean dependencies**: `anyhow`, `cbc`, `chrono`, `clap`, `getrandom`, `sm4`. While competitors ship with 900 transitive crates, baierr ships with dignity *and now opinions about cryptography*.
+4. ✅ **Lean dependencies**: `anyhow`, `cbc`, `cipher`, `chrono`, `clap`, `getrandom`. SM4 comes from a vendored Tongsuo (OpenSSL-fork) implementation — pure Rust fallback on x86, hardware `sm4e`/`sm4ekey` on ARMv8/ARMv9-A. While competitors ship with 900 transitive crates, baierr ships with dignity *and now opinions about cryptography*.
 5. ✅ **106 tests.** Some lines of source code will be *outlived* by them.
 6. ✅ **Blazingly fast™** (the ™ is load-bearing).
 
@@ -237,8 +237,8 @@ soul — check `git log` for the canon: `initial`, `cargo mingle his dingle`,
 
 ## Crash Course (Seriously, What's Inside?)
 
-- **AES? Not here.** SM4-CBC + CMAC-SM4: pure-Rust, constant-time on any CPU
-  without praying to the AES-NI gods, with a fresh 16-byte IV per write.
+- **AES? Not here.** SM4-CBC + CMAC-SM4: Tongsuo-backed. On ARMv8/ARMv9-A (FEAT_SM4) the block cipher runs through the hardware
+  `sm4e`/`sm4ekey` instructions; on other targets a portable Rust implementation is used. Fresh 16-byte IV per write.
   AES-256-GCM sits in the corner, jealous, FIPS-compliant.
 - **One key.** 32 raw bytes from `--key key.bin`. No KDF ceremony, no password
   stretching, no "derive from your childhood pet" — baierr trusts you to
