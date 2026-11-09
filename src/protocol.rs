@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::Pkcs7};
 use cmac::{Cmac, Mac};
-use sm4::Sm4;
+use crate::sm4::Sm4;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
