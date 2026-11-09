@@ -218,3 +218,55 @@ fn t(val: u32) -> u32 {
 fn t_prime(val: u32) -> u32 {
     el_prime(tau(val))
 }
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::Sm4;
+    use cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
+
+    #[test]
+    fn sm4_known_vector_ecb() {
+        let key: [u8; 16] = [
+            0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10,
+        ];
+        let pt: [u8; 16] = [
+            0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10,
+        ];
+        let expected: [u8; 16] = [
+            0x68,0x1e,0xdf,0x34,0xd2,0x06,0x96,0x5e,0x86,0xb3,0xe9,0x4f,0x53,0x6e,0x42,0x46,
+        ];
+
+        let cipher = Sm4::new_from_slice(&key).unwrap();
+        let mut block = cipher::Block::<Sm4>::default();
+        block.copy_from_slice(&pt);
+        cipher.encrypt_block(&mut block);
+        assert_eq!(block.as_slice(), &expected);
+
+        let mut block2 = cipher::Block::<Sm4>::default();
+        block2.copy_from_slice(&expected);
+        cipher.decrypt_block(&mut block2);
+        assert_eq!(block2.as_slice(), &pt);
+    }
+
+    #[test]
+    fn sm4_roundtrip_blocks() {
+        let key = [0x42u8; 16];
+        let cipher = Sm4::new_from_slice(&key).unwrap();
+        for seed in 0u8..16 {
+            let mut block_arr = [seed; 16];
+            let original = block_arr;
+            let mut block = cipher::Block::<Sm4>::default();
+            block.copy_from_slice(&block_arr);
+            cipher.encrypt_block(&mut block);
+            block_arr.copy_from_slice(block.as_slice());
+            assert_ne!(block_arr, original);
+            let mut block2 = cipher::Block::<Sm4>::default();
+            block2.copy_from_slice(&block_arr);
+            cipher.decrypt_block(&mut block2);
+            block_arr.copy_from_slice(block2.as_slice());
+            assert_eq!(block_arr, original);
+        }
+    }
+}
