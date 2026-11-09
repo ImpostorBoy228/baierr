@@ -9,6 +9,7 @@ use std::{
 };
 
 mod protocol;
+mod sm4;
 
 #[derive(Parser)]
 #[command(name = "baierr", version, about = "secrets and shit")]

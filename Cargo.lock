@@ -105,11 +105,11 @@ dependencies = [
  "block-padding",
  "cbc",
  "chrono",
+ "cipher",
  "clap",
  "cmac",
  "criterion",
  "getrandom",
- "sm4",
 ]
 
 [[package]]
@@ -760,15 +760,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "sm4"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff2d621883cdeeaee6759d39f4bc8cd314b29db72b6ac3d6714b31422512ee11"
-dependencies = [
- "cipher",
-]
 
 [[package]]
 name = "strsim"
