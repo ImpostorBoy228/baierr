@@ -1,6 +1,9 @@
 # baierr
 
 > *"secrets and shit"* — the official tagline from `--help`. Honestly, it undersells it.
+- ts is for perrsonal use, so these bugs only can possibly come from 他人。
+- security(expept exposing filenames and offsets, always mind this) is enough to prevent bluds read your грязные секретики(SM4，中国的国家标准，坚不可摧)
+> 操，我真是个彻头彻尾的傻逼，现在才反应过来。既然文件名都没加密，我们还加密RDD干啥……管他呢，就这么着吧。
 
 <div align="center">
 
