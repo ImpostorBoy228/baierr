@@ -1,7 +1,7 @@
+use crate::sm4::Sm4;
 use anyhow::{Result, bail};
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::Pkcs7};
 use cmac::{Cmac, Mac};
-use crate::sm4::Sm4;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -52,7 +52,7 @@ pub fn append<P: AsRef<std::path::Path>>(
 
     // '\n' guaranteed
     file.seek(SeekFrom::Start(eof))?;
-    file.write_all(format!("{} {}\n", inner_path, ciphertext.len()).as_bytes())?;
+    file.write_all(format!("{}\n", ciphertext.len()).as_bytes())?;
     file.write_all(&ciphertext)?;
     file.write_all(b"\n")?; // here it appears
     let eob_new = file.stream_position()?;
@@ -98,12 +98,7 @@ pub fn read<P: AsRef<std::path::Path>>(
         header.push(b[0]);
     }
     let header = String::from_utf8(header).map_err(|_| anyhow::anyhow!("invalid header"))?;
-    let (name, size_str) = header
-        .rsplit_once(' ')
-        .ok_or_else(|| anyhow::anyhow!("bad header"))?;
-    if name != inner_path {
-        return Err(anyhow::anyhow!("inner_path mismatch"));
-    }
+    let size_str = header;
     let size: usize = size_str.parse().map_err(|_| anyhow::anyhow!("bad size"))?;
     if size < OVERHEAD + BLOCK {
         bail!("payload too small: {}", size);
@@ -284,7 +279,7 @@ mod tests {
         for (i, (_, off)) in entries.iter().enumerate() {
             let nl = bytes[*off..].iter().position(|&b| b == b'\n').unwrap();
             let header = String::from_utf8_lossy(&bytes[*off..*off + nl]).into_owned();
-            let size: usize = header.rsplit_once(' ').unwrap().1.parse().unwrap();
+            let size: usize = header.trim().parse().unwrap();
             let ct_start = *off + nl + 1;
             let ct_end = ct_start + size;
             out.push((ct_start, ct_end));
@@ -337,11 +332,11 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, b"ABC", "foo").unwrap();
         let bytes = fs::read(&p).unwrap();
         assert!(
-            bytes.starts_with(b"\nfoo 48\n"),
+            bytes.starts_with(b"\n48\n"),
             "got: {:?}",
             String::from_utf8_lossy(&bytes[..40])
         );
-        let header_end = b"\nfoo 48\n".len();
+        let header_end = b"\n48\n".len();
         let ct_region = &bytes[header_end..header_end + 48];
         assert!(
             !ct_region.windows(3).any(|w| w == b"ABC"),
@@ -358,7 +353,7 @@ mod tests {
         let bytes = fs::read(&p).unwrap();
         // 空明文 => 16（iv）+ 16（填充）+ 16（tag）= 48 字节
         assert!(
-            bytes.starts_with(b"\nempty 48\n"),
+            bytes.starts_with(b"\n48\n"),
             "got: {:?}",
             String::from_utf8_lossy(&bytes[..40])
         );
@@ -420,7 +415,7 @@ mod tests {
         append(p.to_str().unwrap(), &KEY, b"Q", "my file.txt").unwrap();
         let bytes = fs::read(&p).unwrap();
         assert!(
-            bytes.windows(12).any(|w| w == b"my file.txt "),
+            bytes.starts_with(b"\n48\n"),
             "got: {:?}",
             String::from_utf8_lossy(&bytes[..40])
         );
@@ -438,7 +433,7 @@ mod tests {
         // find entry line "foo <offset>" in rdd region (текст, plaintext)
         let entry = find_entry_offset(&bytes, "foo").unwrap();
         assert!(
-            bytes[entry..].starts_with(b"foo 48"),
+            bytes[entry..].starts_with(b"48"),
             "off={}, bytes={:?}",
             entry,
             String::from_utf8_lossy(&bytes[entry..entry + 6])
@@ -914,7 +909,7 @@ mod tests {
                 header.push(b[0]);
             }
             let h = String::from_utf8_lossy(&header).into_owned();
-            let size: usize = h.rsplit_once(' ').unwrap().1.parse().unwrap();
+            let size: usize = h.trim().parse().unwrap();
             let mut ct = vec![0; size];
             file.read_exact(&mut ct).unwrap();
             cts.push(ct);
