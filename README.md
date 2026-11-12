@@ -2,7 +2,7 @@
 
 > *"secrets and shit"* — the official tagline from `--help`. Honestly, it undersells it.
 - ts is for perrsonal use, so these bugs only can possibly come from 他人。
-- security(expept exposing filenames and offsets, always mind this) is enough to prevent bluds read your грязные секретики(SM4，中国的国家标准，坚不可摧)
+- security(except exposing record sizes/offsets layout, always mind this) is enough to prevent bluds read your грязные секретики(SM4，中国的国家标准，坚不可摧)
 > 操，我真是个彻头彻尾的傻逼，现在才反应过来。既然文件名都没加密，我们还加密RDD干啥……管他呢，就这么着吧。
 
 <div align="center">
@@ -108,7 +108,7 @@ Error: wrong key or corrupted data    <- authenticated encryption, underpromisin
 
 The keys are 256-bit, loaded raw from a file (`--key key.bin`, exactly 32 bytes)。而且是的，在 `--append` 里，数据会在 `/dev/shm` 的临时文件中编辑，名字极其吓人：`secure_tempfile_{pid}`，之后文件会被 *meticulously* 清零并删除 — 就像一把挂在你早就翻过去的栅栏门上的挂锁。**Enterprises love this.**（现在有 citation 了，按需提供。）
 
-What's *not* secret: names, offsets, the table of contents。目录天生就是明文可读的 — baierr 藏你的数据，不藏你的文件命名习惯。文件名和偏移是公开的，永远记住这一点，啊。
+What's *not* secret: offsets and record sizes。目录（RDD）现在是加密的，文件名和偏移都藏在 SM4 之后 — baierr 不再把名字写进明文 local header。偏移/大小作为加密块的定位信息仍可能从结构中推断，但名字本身已不再是明文。永远记住这一点，啊。
 
 > **Migration notice:** v0.2.0 archives are plaintext and v0.3.0 was born without nostalgia。旧 `.b` 文件读出来只会是 error 或 nonsense — 开新档吧。Forward, not backward。向月球前进，回不了头了。月へ、前へ。
 
@@ -117,7 +117,7 @@ What's *not* secret: names, offsets, the table of contents。目录天生就是�
 ## 🧠 `.b` 文件格式 (Exposed! Documented! Infamous! / Формат раскрыт, задокументирован, печально известен!)
 
 ```text
-[local header]      "name size\n"             <- a line, not magic
+[local header]      "size\n"                  <- a line, not magic (name lives only in the encrypted rdd)
 [data]              exactly `size` bytes of CIPHERTEXT:
                     iv(16) || SM4-CBC ciphertext || tag(16)
                     size = padded_plaintext_length + 32
