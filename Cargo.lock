@@ -104,6 +104,7 @@ dependencies = [
  "anyhow",
  "block-padding",
  "cbc",
+ "cc",
  "chrono",
  "cipher",
  "clap",

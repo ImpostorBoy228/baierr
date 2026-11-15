@@ -89,12 +89,13 @@ fn cmd_append(archive: &Path, key: &[u8; 32]) -> Result<()> {
     let shmpath_raw = format!("/dev/shm/secure_tempfile_{}", std::process::id());
     let shmpath = Path::new(&shmpath_raw);
     fs::write(shmpath, &format!("{}", Local::now()))?;
-    let status = Command::new("nvim")
-        .arg("-n")
-        .arg("-i")
-        .arg("NONE")
-        .arg(shmpath)
-        .status()?;
+    // let status = Command::new("nvim")
+    //     .arg("-n")
+    //     .arg("-i")
+    //     .arg("NONE")
+    //     .arg(shmpath)
+    //     .status()?;
+    let status = Command::new("./affap/main").arg(shmpath).status()?;
 
     if status.success() {
         let edited = fs::read(shmpath)?;
