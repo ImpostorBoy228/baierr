@@ -86,7 +86,13 @@ fn load_key(path: Option<&Path>) -> Result<[u8; 32]> {
 }
 
 fn cmd_append(archive: &Path, key: &[u8; 32]) -> Result<()> {
-    let shmpath_raw = format!("/dev/shm/secure_tempfile_{}", std::process::id());
+    let shmpath_raw;
+    if Path::new("/dev/shm").is_dir() {
+        shmpath_raw = format!("/dev/shm/secure_tempfile_{}", std::process::id());
+    } else {
+        shmpath_raw = format!("./secure_tempfile_{}", std::process::id());
+    }
+
     let shmpath = Path::new(&shmpath_raw);
     fs::write(shmpath, &format!("{}", Local::now()))?;
     // let status = Command::new("nvim")
